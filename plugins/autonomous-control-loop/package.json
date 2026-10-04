@@ -1,0 +1,7 @@
+{
+  "name": "dsh-autonomous-control-loop",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": { ".": "./index.js", "./controller": "./controller.js", "./dsh-worker": "./dsh-worker.js", "./git-snapshot": "./git-snapshot.js" }
+}

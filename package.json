@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "postinstall": "node fix-dsh-fence.js",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "^0.1.5-rc.2"
+  }
+}
