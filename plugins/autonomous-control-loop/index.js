@@ -1,8 +1,11 @@
 import { Service } from '@deepseek-ai/cordis';
 import { AutonomousControlLoop } from './controller.js';
+import { ProjectRuntime } from '../../runtime/project.mjs';
 export { AutonomousControlLoop } from './controller.js';
 export { createDshWorker } from './dsh-worker.js';
 export { gitSnapshot } from './git-snapshot.js';
+export { ProjectRuntime } from '../../runtime/project.mjs';
+export { createAgentAdapter } from '../../runtime/adapters.mjs';
 
 export const name = 'autonomous-control-loop';
 
@@ -14,6 +17,11 @@ export function apply(ctx) {
       const loop = new AutonomousControlLoop(options);
       this.controllers.add(loop);
       return loop;
+    }
+    createProject(config, dependencies) {
+      const project = new ProjectRuntime(config, dependencies);
+      this.controllers.add(project);
+      return project;
     }
   }
   const service = new ControlService();

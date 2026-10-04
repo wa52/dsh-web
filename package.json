@@ -1,7 +1,10 @@
 {
   "scripts": {
     "postinstall": "node fix-dsh-fence.js",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "start": "node runtime/cli.mjs",
+    "test:live": "node scripts/live-e2e.mjs",
+    "test:agents": "node scripts/smoke-agents.mjs"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "^0.1.5-rc.2"

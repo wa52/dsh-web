@@ -1,0 +1,277 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, writeFile, rm, mkdir, symlink } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { ProjectRuntime } from '../runtime/project.mjs';
+import { ProcessAdapter, parseObject, processFingerprint } from '../runtime/process.mjs';
+import { createAgentAdapter } from '../runtime/adapters.mjs';
+import { AgentRegistry } from '../runtime/registry.mjs';
+import { guardPath, denyTool } from '../runtime/permissions.mjs';
+import { createControlServer } from '../runtime/server.mjs';
+import { createCheckoutFixture } from '../scripts/fixture.mjs';
+import { fileURLToPath } from 'node:url';
+import { recoverInterruptedProject } from '../runtime/recovery.mjs';
+import { WorldStore } from '../runtime/store.mjs';
+import { randomUUID } from 'node:crypto';
+
+test('provider envelopes accept one JSON block and reject ambiguous reports', () => {
+  assert.deepEqual(parseObject('Review evidence\n```json\n{"verdict":"reject"}\n```'), { verdict: 'reject' });
+  assert.throws(() => parseObject('```json\n{}\n```\n```json\n{}\n```'), /Ambiguous/);
+  assert.throws(() => parseObject('All tests passed'), /JSON/);
+});
+
+async function setup(t) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-v1-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixture = await createCheckoutFixture(path.join(root, 'repo'));
+  const config = { ...fixture, stateDir: path.join(root, 'state'), constraints: ['Never change tests'], protectedPaths: ['tests/acceptance.test.mjs'], permissions: { shell: false, network: false }, tests: [{ executable: process.execPath, args: ['--test', 'tests/acceptance.test.mjs'] }] };
+  return { root, config };
+}
+
+function controlledAdapter(id, build, review) {
+  // Deterministic test double; never represented as a live model acceptance.
+  return { id, provider: 'test-double', roles: ['build', 'review'], capabilities: ['code', 'ui', 'review', 'security', 'reason'], trust: id === 'code-worker' ? 0.95 : 0.75, cost: 1, availability: 'online',
+    describe() { return { id, roles: this.roles, availability: this.availability, runs: [] }; },
+    async start(task) {
+      return { id: `test-${Date.now()}`, result: Promise.resolve().then(() => task.role === 'build' ? build(task) : review(task)), dispose: async () => {} };
+    } };
+}
+
+async function assess(state, observation, directory) {
+  const source = await readFile(path.join(directory, 'checkout.mjs'), 'utf8');
+  const css = await readFile(path.join(directory, 'style.css'), 'utf8');
+  const gaps = [];
+  if (!source.includes('item.price * item.quantity')) gaps.push({ id: 'quantity', description: 'Incorrect subtotal', priority: 80, evidence: ['functional acceptance test'] });
+  // Rejection evidence can reveal a new higher priority regression in unaccepted work.
+  if (source.includes('item.price * item.quantity') && source.split('export const delivery')[1].includes('sum + item.price, 0')) gaps.unshift({ id: 'delivery', description: 'New delivery regression', priority: 100, evidence: ['independent failed review and current source'] });
+  if (css.includes('display: none')) gaps.push({ id: 'visibility', description: 'Hidden checkout UI', priority: 30, evidence: ['UI acceptance test'] });
+  return { complete: gaps.length === 0, reason: gaps.length ? 'Current observed defects' : 'Tests and current state satisfy criteria', projectHealth: gaps.length ? 0.4 : 1, gaps,
+    candidates: gaps.map(gap => ({ gapId: gap.id, goal: gap.description, capabilities: [gap.id === 'visibility' ? 'ui' : 'code'], risk: 'normal', strategy: gap.id === 'delivery' ? 'repair' : 'reprioritize', rationale: gap.evidence[0] })) };
+}
+
+test('V1 governed fixture: regression rejection, dynamic replan, independent trees, commits and restart', async t => {
+  const { config } = await setup(t);
+  const builds = [], reviews = [];
+  const build = async task => {
+    builds.push(task.workspace);
+    const file = path.join(task.workspace, 'checkout.mjs');
+    let source = await readFile(file, 'utf8');
+    if (task.prompt.includes('Goal: Incorrect subtotal')) source = source.replace('sum + item.price, 0', 'sum + item.price * item.quantity, 0');
+    else if (task.prompt.includes('Goal: New delivery regression')) source = source.replaceAll('sum + item.price, 0', 'sum + item.price * item.quantity, 0');
+    else await writeFile(path.join(task.workspace, 'style.css'), '.checkout { display: block; padding: 16px; }\n');
+    await writeFile(file, source);
+    return { summary: 'Builder says completed' };
+  };
+  const review = async task => {
+    reviews.push(task.workspace);
+    const source = await readFile(path.join(task.workspace, 'checkout.mjs'), 'utf8');
+    const brokenDelivery = source.split('export const delivery')[1].includes('sum + item.price, 0');
+    return { verdict: brokenDelivery ? 'reject' : 'pass', reason: brokenDelivery ? 'Delivery regression' : 'Source and actual host tests verified', evidence: ['checkout.mjs', 'tests/acceptance.test.mjs'], blockingRisks: brokenDelivery ? ['Wrong delivery charge'] : [] };
+  };
+  const agents = [controlledAdapter('code-worker', build, review), controlledAdapter('ui-worker', build, review)];
+  const runtime = new ProjectRuntime(config, { agents, assessment: assess });
+  const state = await runtime.start({ maxActions: 6 });
+  assert.equal(state.status, 'complete');
+  assert.deepEqual(state.actions.map(a => a.gapId), ['quantity', 'delivery', 'visibility']);
+  assert.deepEqual(state.actions.map(a => a.phase), ['REJECTED', 'REJECTED', 'MERGE_READY']);
+  assert.ok(state.actions.every(a => a.commit && a.tests.length && a.reviews.length && a.decisionId && a.rationale));
+  assert.equal(new Set([...builds, ...reviews]).size, builds.length + reviews.length);
+  assert.equal(state.decisions.length, 4);
+  const main = execFileSync('git', ['-C', config.repository, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  assert.notEqual(main, state.acceptedHead);
+  assert.match(await readFile(path.join(config.repository, 'style.css'), 'utf8'), /display: none/);
+  const resumed = new ProjectRuntime(config, { agents, assessment: assess });
+  const restored = await resumed.initialize();
+  for (const key of ['goal', 'gaps', 'actions', 'reviews', 'failures', 'decisions', 'evidence', 'agentPerformance', 'commits']) assert.deepEqual(restored[key], state[key]);
+});
+
+test('agent registry uses capabilities, risk, availability and failure history', () => {
+  const registry = new AgentRegistry();
+  const a = controlledAdapter('code-worker', () => {}, () => {}), b = controlledAdapter('ui-worker', () => {}, () => {});
+  b.capabilities = ['ui', 'review']; registry.add(a); registry.add(b);
+  assert.equal(registry.select({ role: 'build', capabilities: ['code'] }).id, a.id);
+  assert.equal(registry.select({ role: 'build', capabilities: ['ui'] }, { [a.id]: { successes: 0, failures: 3, consecutiveFailures: 3 } }).id, b.id);
+  b.availability = 'offline'; assert.equal(registry.select({ role: 'build', capabilities: ['ui'] }).id, a.id);
+});
+
+test('permissions block external writes, Git metadata and shell bypass for reviewers', async t => {
+  const { config } = await setup(t);
+  assert.equal(guardPath(config.repository, '../outside.txt'), 'Path outside assigned worktree');
+  assert.equal(guardPath(config.repository, '.git/config'), 'Git metadata is Controller-owned');
+  assert.equal(denyTool(config.repository, { write: false }, 'write', { path: 'a.txt' }), 'Reviewer is read-only');
+  assert.equal(denyTool(config.repository, { write: false }, 'bash', { command: 'echo bad > a.txt' }), 'Tool not permitted by Control Plane');
+  assert.equal(guardPath(config.repository, 'checkout.mjs'), undefined);
+});
+
+test('real process adapter captures output, error, status and cancellation', async t => {
+  const { root, config } = await setup(t);
+  const adapter = new ProcessAdapter({ id: 'child' }, async () => ({ executable: process.execPath, args: ['-e', 'console.log(JSON.stringify({summary:"ok"}))'], stdin: '', finish: parseObject }));
+  const run = await adapter.start({ workspace: config.repository, artifactDir: root, timeoutMs: 10000 });
+  assert.equal((await run.result).summary, 'ok'); await run.dispose(); assert.equal(adapter.status(run.id), 'completed');
+  const sleeper = new ProcessAdapter({ id: 'sleeper' }, async () => ({ executable: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'], finish: parseObject }));
+  const sleeping = await sleeper.start({ workspace: config.repository, artifactDir: root, timeoutMs: 10000 });
+  const rejected = assert.rejects(sleeping.result, /interrupted/); await sleeping.dispose(); await rejected;
+  assert.equal(sleeper.status(sleeping.id), 'failed');
+});
+
+test('host tests fail even if Builder and Reviewer both claim pass', async t => {
+  const { config } = await setup(t);
+  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, async () => ({ summary: 'all tests pass' }), async () => ({ verdict: 'pass', reason: 'claimed', evidence: ['claim'], blockingRisks: [] })));
+  const runtime = new ProjectRuntime(config, { agents, assessment: assess });
+  const state = await runtime.start({ maxActions: 1 });
+  assert.equal(state.actions[0].phase, 'REJECTED');
+  assert.equal(state.commits[0].status, 'candidate');
+});
+
+test('protected test mutation cannot become merge-ready', async t => {
+  const { config } = await setup(t);
+  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, async task => {
+    await writeFile(path.join(task.workspace, 'tests/acceptance.test.mjs'), '// forged passing tests'); return {};
+  }, async () => ({ verdict: 'pass', reason: 'claim', evidence: ['claim'], blockingRisks: [] })));
+  const runtime = new ProjectRuntime(config, { agents, assessment: assess });
+  const state = await runtime.start({ maxActions: 1 });
+  assert.equal(state.actions[0].protectedIntact, false);
+  assert.equal(state.actions[0].phase, 'REJECTED');
+});
+
+test('server protects mutation requests and renders unconfigured UI', async t => {
+  const server = createControlServer(null, { port: 0 });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  assert.equal((await fetch(base)).status, 200);
+  assert.equal((await (await fetch(`${base}/api/state`)).json()).agents.length, 4);
+  assert.equal((await fetch(`${base}/api/start`, { method: 'POST' })).status, 403);
+  assert.equal((await fetch(`${base}/api/start`, { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json', 'X-DSH-Control': '1' }, body: '{}' })).status, 409);
+});
+
+test('all four CLI adapters expose the same lifecycle contract', () => {
+  for (const provider of ['codex', 'opencode', 'pi', 'dsh']) {
+    const adapter = createAgentAdapter(provider);
+    for (const method of ['start', 'send', 'cancel', 'status', 'result']) assert.equal(typeof adapter[method], 'function', `${provider}.${method}`);
+  }
+});
+
+test('four native transports launch and parse their published JSON/RPC formats', async t => {
+  const { root, config } = await setup(t);
+  const entry = fileURLToPath(new URL('./fixtures/agent-cli.mjs', import.meta.url));
+  for (const provider of ['codex', 'opencode', 'pi', 'dsh']) {
+    const adapter = createAgentAdapter(provider, { executable: process.execPath, argsPrefix: [entry], env: { DSH_PROTOCOL_FIXTURE: provider } });
+    const handle = await adapter.start({ role: 'review', workspace: config.repository, artifactDir: path.join(root, provider), runKey: provider, permissions: { write: false }, prompt: 'Protocol test', timeoutMs: 10_000 });
+    try { assert.equal((await handle.result).summary, 'protocol-ok', provider); } finally { await handle.dispose(); }
+    assert.equal(adapter.status(handle.id), 'completed');
+  }
+});
+
+test('worker crash persists failure and reassigns the next action', async t => {
+  const { config } = await setup(t);
+  const broken = controlledAdapter('code-worker', async () => { throw new Error('worker killed'); }, async () => {});
+  const good = controlledAdapter('ui-worker', async () => ({}), async () => ({ verdict: 'reject', reason: 'source unchanged', evidence: ['tests'], blockingRisks: ['defects remain'] }));
+  const runtime = new ProjectRuntime(config, { agents: [broken, good], assessment: assess });
+  const state = await runtime.start({ maxActions: 1 });
+  assert.equal(state.actions[0].phase, 'FAILED');
+  assert.match(state.failures[0].error, /worker killed/);
+  assert.equal(runtime.registry.select({ role: 'build', capabilities: ['code'] }, state.agentPerformance).id, 'ui-worker');
+  assert.deepEqual((await runtime.store.load()).failures, state.failures);
+});
+
+test('explicit recovery preserves an interrupted action for replanning', async t => {
+  const { config } = await setup(t);
+  const runtime = new ProjectRuntime(config);
+  await runtime.initialize();
+  runtime.state.actions.push({ id: 'interrupted', phase: 'BUILDING' });
+  await runtime.checkpoint();
+  const state = await recoverInterruptedProject(config);
+  assert.equal(state.actions[0].phase, 'FAILED');
+  assert.equal(state.status, 'paused');
+  assert.equal(state.failures.length, 1);
+});
+
+test('missing review fields cannot pass and retry budget halts the gate', async t => {
+  const { config } = await setup(t);
+  config.maxReviewAttempts = 1;
+  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, async () => ({}), async () => ({ verdict: 'pass', reason: 'claim', evidence: ['claim'] })));
+  const runtime = new ProjectRuntime(config, { agents, assessment: assess });
+  await assert.rejects(runtime.start({ maxActions: 1 }), /Invalid independent review/);
+  assert.equal(runtime.state.actions[0].phase, 'HALTED');
+  assert.equal(runtime.state.acceptedHead, runtime.state.actions[0].acceptedBase);
+});
+
+test('an alias of the Builder identity cannot review its changes', async t => {
+  const { config } = await setup(t);
+  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, async () => ({}), async () => ({ verdict: 'pass', reason: 'claim', evidence: ['claim'], blockingRisks: [] })));
+  agents.forEach(agent => { agent.identity = 'shared-session'; });
+  const runtime = new ProjectRuntime(config, { agents, assessment: assess });
+  await assert.rejects(runtime.start({ maxActions: 1 }), /retry budget exhausted/);
+  assert.equal(runtime.state.actions[0].phase, 'HALTED');
+});
+
+test('recovery lock excludes a new controller and persisted host policy is immutable', async t => {
+  const { root, config } = await setup(t);
+  const runtime = new ProjectRuntime(config);
+  await runtime.initialize();
+  await writeFile(path.join(config.stateDir, 'recovery.lock'), '{}');
+  await assert.rejects(new WorldStore(config.stateDir).acquire(), /Recovery is in progress/);
+  await rm(path.join(config.stateDir, 'recovery.lock'));
+  const changed = new ProjectRuntime({ ...config, tests: [{ executable: process.execPath, args: ['-e', 'process.exit(0)'] }] });
+  await assert.rejects(changed.initialize(), /Host tests or constraints differ/);
+});
+
+test('transient reviewer failure retries independently without another Builder', async t => {
+  const { config } = await setup(t);
+  let builds = 0, reviews = 0;
+  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, async () => { builds++; return {}; }, async () => {
+    if (++reviews === 1) throw new Error('transient reviewer failure');
+    return { verdict: 'reject', reason: 'actual tests fail', evidence: ['host tests'], blockingRisks: ['defects'] };
+  }));
+  const runtime = new ProjectRuntime(config, { agents, assessment: assess });
+  const state = await runtime.start({ maxActions: 1 });
+  assert.equal(builds, 1); assert.equal(reviews, 2);
+  assert.equal(state.actions[0].phase, 'REJECTED');
+  assert.equal(state.actions[0].reviewAttempts, 2);
+});
+
+test('ignored dependency cannot pass clean committed-tree tests', async t => {
+  const { config } = await setup(t);
+  const build = async task => {
+    await writeFile(path.join(task.workspace, '.gitignore'), 'hidden.mjs\n');
+    await writeFile(path.join(task.workspace, 'hidden.mjs'), 'export const total = items => items.reduce((sum,item)=>sum+item.price*item.quantity,0); export const delivery = items => total(items)>=30?0:5;\n');
+    await writeFile(path.join(task.workspace, 'checkout.mjs'), "export { total, delivery } from './hidden.mjs';\n");
+    await writeFile(path.join(task.workspace, 'style.css'), '.checkout { display:block; }\n');
+    return {};
+  };
+  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, build, async () => ({ verdict: 'pass', reason: 'claim', evidence: ['Builder tests'], blockingRisks: [] })));
+  const runtime = new ProjectRuntime(config, { agents, assessment: assess });
+  const state = await runtime.start({ maxActions: 1 });
+  assert.equal(state.actions[0].tests.every(test => test.passed), true);
+  assert.equal(state.actions[0].committedTests.every(test => test.passed), false);
+  assert.equal(state.actions[0].phase, 'REJECTED');
+});
+
+test('recovery stops a Worker spawned before PID publication using the durable launch token', async t => {
+  const { root, config } = await setup(t);
+  const token = randomUUID();
+  const adapter = new ProcessAdapter({ id: 'orphan' }, async () => ({ executable: process.execPath, args: ['-e', 'setInterval(()=>{},1000)', token], finish: parseObject }));
+  const handle = await adapter.start({ workspace: config.repository, artifactDir: root, timeoutMs: 30000 });
+  t.after(() => handle.dispose());
+  const result = assert.rejects(handle.result);
+  const runtime = new ProjectRuntime(config); await runtime.initialize();
+  runtime.state.actions.push({ id: 'crash-before-pid', phase: 'BUILDING' });
+  runtime.state.runs.push({ id: token, launchToken: token, status: 'preparing' });
+  await runtime.checkpoint();
+  const recovered = await recoverInterruptedProject(config);
+  await result;
+  assert.equal(recovered.runs[0].status, 'interrupted');
+  assert.equal(recovered.actions[0].phase, 'FAILED');
+});
+
+test('Windows job stops descendants even when the Worker launcher exits first', { skip: process.platform !== 'win32' }, async t => {
+  const { root, config } = await setup(t);
+  const script = "const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); child.unref(); console.log(JSON.stringify({pid:child.pid}));";
+  const adapter = new ProcessAdapter({ id: 'parent-exits-first' }, async () => ({ executable: process.execPath, args: ['-e', script], finish: parseObject }));
+  const handle = await adapter.start({ workspace: config.repository, artifactDir: root, timeoutMs: 15000 });
+  try { const report = await handle.result; assert.equal(await processFingerprint(report.pid), null); }
+  finally { await handle.dispose(); }
+});

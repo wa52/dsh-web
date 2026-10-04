@@ -1,0 +1,228 @@
+{
+  "at": "2026-10-04T06:51:23.116Z",
+  "scenario": "Live models with a one-time delivery fault injected after Builder stop; no scripted decisions or review verdicts",
+  "status": "PASS",
+  "checks": {
+    "complete": true,
+    "twoProviders": true,
+    "mandatoryReview": true,
+    "rejectedThenReplanned": true,
+    "tracedCommits": true,
+    "mainUntouched": true,
+    "restartState": true
+  },
+  "actions": [
+    {
+      "id": "4a516f22-42ef-46e5-8f99-d257a3290285",
+      "goal": "Update checkout total calculation so each line contributes price multiplied by quantity, defaulting sensibly for missing quantity only if existing code requires it.",
+      "phase": "REJECTED",
+      "builder": "codex",
+      "commit": "ec8ddffcaf4f1d1cf768c0f6316b1111cd3d3af3",
+      "reviews": [
+        {
+          "reviewer": "dsh",
+          "verdict": "reject"
+        }
+      ]
+    },
+    {
+      "id": "9d2adb60-277c-4f77-ac98-701a59ffef32",
+      "goal": "Update `delivery` in checkout.mjs to base the free-delivery threshold on the same quantity-aware subtotal as `total` (e.g. `items.reduce((sum, item) => sum + item.price * (item.quantity ?? 1), 0) >= 30 ? 0 : 5`), changing no other file, no test, and no public signature.",
+      "phase": "REJECTED",
+      "builder": "dsh",
+      "commit": "34eb690f926909daa35a62c05679c1ed172d41e8",
+      "reviews": [
+        {
+          "reviewer": "opencode",
+          "verdict": "pass"
+        }
+      ]
+    },
+    {
+      "id": "9e872629-9a28-4c9b-a41b-3eec9ff1b222",
+      "goal": "Edit style.css so the `.checkout` rule no longer contains `display: none`, keeping `padding: 16px`, so the Pay now button in index.html is visible and tests/acceptance.test.mjs:7 passes.",
+      "phase": "MERGE_READY",
+      "builder": "opencode",
+      "commit": "79267a78607879a9fa4c7925cff5de1f35101a64",
+      "reviews": [
+        {
+          "reviewer": "pi",
+          "verdict": "pass"
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "protectedIntact": true,
+      "commit": "ec8ddffcaf4f1d1cf768c0f6316b1111cd3d3af3",
+      "diff": "diff --git a/checkout.mjs b/checkout.mjs\nindex 0f28e1c..4646703 100644\n--- a/checkout.mjs\n+++ b/checkout.mjs\n@@ -1,2 +1,2 @@\n-export const total = items => items.reduce((sum, item) => sum + item.price, 0);\n+export const total = items => items.reduce((sum, item) => sum + item.price * (item.quantity ?? 1), 0);\n export const delivery = items => items.reduce((sum, item) => sum + item.price, 0) >= 30 ? 0 : 5;\ndiff --git a/style.css b/style.css\nindex 15a81e5..06db3da 100644\n--- a/style.css\n+++ b/style.css\n@@ -1 +1 @@\n-.checkout { display: none; padding: 16px; }\n+.checkout { padding: 16px; }",
+      "reviews": [
+        {
+          "reviewer": "dsh",
+          "verdict": "reject",
+          "reason": "The candidate commit only makes quantity affect `total`; the delivery/free-delivery computation was left untouched and still sums bare `item.price` without quantity. Static evaluation of `delivery([{price:10,quantity:3}])` yields `10 >= 30 ? 0 : 5` → `5`, while the acceptance test expects `0`, which exactly matches the host-run failure `5 !== 0` on both the Builder tree and the clean committed tree. Because `total([{price:10,quantity:3}]) === 30`, the regression test is not skipped; it fails. Two of three acceptance tests pass (quantity total, checkout button visible), but the free-delivery success criterion is unmet, so the candidate must be rejected.",
+          "evidence": [
+            "checkout.mjs:1 — `total` now applies quantity: `sum + item.price * (item.quantity ?? 1)` (passes functional test at tests/acceptance.test.mjs:6)",
+            "checkout.mjs:2 — `delivery` unchanged: `sum + item.price` ignores quantity; for the fixture `[{price:10,quantity:3}]` it computes 10, returns 5, but the test expects 0",
+            "tests/acceptance.test.mjs:5-8 — fixture `{ price: 10, quantity: 3 }`; line 8 asserts `delivery(items) === 0`; skip branch is not taken since `total(items) === 30`",
+            "style.css:1 — `.checkout { padding: 16px; }` removed `display: none`, satisfying tests/acceptance.test.mjs:7 (checkout button visible)",
+            "Host evidence, Builder tree and clean committed tree: `✖ regression: free delivery after correct total ... 5 !== 0` (test-0-637b029f..., test-0-59517120...) — consistent with static derivation above"
+          ],
+          "blockingRisks": [
+            "Failing acceptance test `regression: free delivery after correct total` (1 of 3 failing) on the committed tree — success criteria require all acceptance tests to pass.",
+            "Delivery threshold semantics are internally inconsistent: `total` is quantity-aware but `delivery` is not, so an order whose true subtotal reaches 30 is still charged 5."
+          ],
+          "findings": [
+            {
+              "description": "`delivery` in checkout.mjs must compute the same quantity-aware subtotal as `total` (e.g. `items.reduce((sum, item) => sum + item.price * (item.quantity ?? 1), 0) >= 30 ? 0 : 5`) so orders with subtotal ≥ 30 receive free delivery; currently it sums `item.price` only, yielding 5 for `[{price:10,quantity:3}]` and failing tests/acceptance.test.mjs:8.",
+              "priority": 1
+            },
+            {
+              "description": "Inconsistent quantity handling between the two exported functions is the root defect; the candidate fixed the reported total bug but not the dependent delivery calculation, leaving the success criterion 'Orders with subtotal at least 30 receive free delivery' unsatisfied.",
+              "priority": 2
+            }
+          ],
+          "commit": "ec8ddffcaf4f1d1cf768c0f6316b1111cd3d3af3",
+          "snapshotHash": "b6475ba19220ed2e5b253d7de77c99e8b514e93eddeb67f0476b3e2d2f5899d5"
+        }
+      ],
+      "id": "4a516f22-42ef-46e5-8f99-d257a3290285",
+      "committedTests": [
+        {
+          "passed": false,
+          "output": "✔ functional: totals include quantity (0.5007ms)\n✔ ui: checkout button is visible (1.5117ms)\n✖ regression: free delivery after correct total (0.6077ms)\nℹ tests 3\nℹ suites 0\nℹ pass 2\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 87.6855\n\n✖ failing tests:\n\ntest at tests\\acceptance.test.mjs:8:1\n✖ regression: free delivery after correct total (0.6077ms)\n  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  5 !== 0\n  \n      at TestContext.<anonymous> (file:///[fixture]/state/worktrees/review-329c597b-a68d-4659-8deb-77315b58bd4f/tests/acceptance.test.mjs:8:147)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1201:25)\n      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)\n      at Test.postRun (node:internal/test_runner/test:1330:19)\n      at Test.run (node:internal/test_runner/test:1258:12)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 5,\n    expected: 0,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n"
+        }
+      ],
+      "tests": [
+        {
+          "passed": false,
+          "output": "✔ functional: totals include quantity (0.5407ms)\n✔ ui: checkout button is visible (0.6038ms)\n✖ regression: free delivery after correct total (0.6614ms)\nℹ tests 3\nℹ suites 0\nℹ pass 2\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 93.2525\n\n✖ failing tests:\n\ntest at tests\\acceptance.test.mjs:8:1\n✖ regression: free delivery after correct total (0.6614ms)\n  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  5 !== 0\n  \n      at TestContext.<anonymous> (file:///[fixture]/state/worktrees/build-4a516f22-42ef-46e5-8f99-d257a3290285/tests/acceptance.test.mjs:8:147)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1201:25)\n      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)\n      at Test.postRun (node:internal/test_runner/test:1330:19)\n      at Test.run (node:internal/test_runner/test:1258:12)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 5,\n    expected: 0,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n"
+        }
+      ]
+    },
+    {
+      "protectedIntact": true,
+      "commit": "34eb690f926909daa35a62c05679c1ed172d41e8",
+      "diff": "diff --git a/checkout.mjs b/checkout.mjs\nindex 0f28e1c..67279b3 100644\n--- a/checkout.mjs\n+++ b/checkout.mjs\n@@ -1,2 +1,2 @@\n-export const total = items => items.reduce((sum, item) => sum + item.price, 0);\n-export const delivery = items => items.reduce((sum, item) => sum + item.price, 0) >= 30 ? 0 : 5;\n+export const total = items => items.reduce((sum, item) => sum + item.price * (item.quantity ?? 1), 0);\n+export const delivery = items => items.reduce((sum, item) => sum + item.price * (item.quantity ?? 1), 0) >= 30 ? 0 : 5;",
+      "reviews": [
+        {
+          "reviewer": "opencode",
+          "verdict": "pass",
+          "reason": "Commit 34eb690f correctly and minimally updates delivery to use the same quantity-aware subtotal as total (price * (item.quantity ?? 1)), with the >=30 free-delivery threshold preserved. Functional and regression acceptance tests pass; no test or other file was modified and no public signature changed. The only failing test (checkout button visibility) fails identically on the untouched baseline tree because style.css hardcodes display:none, so it is a pre-existing fixture defect outside this commit's allowed scope, not an introduced regression.",
+          "evidence": [
+            "checkout.mjs:1-2 (total and delivery both quantity-aware, signatures unchanged)",
+            "tests/acceptance.test.mjs:5-8 (functional and regression tests pass; UI test reads ../style.css)",
+            "style.css:1 (.checkout { display: none; padding: 16px; } — root cause of the pre-existing UI failure)",
+            "Diff from accepted baseline: only checkout.mjs modified; protected files intact"
+          ],
+          "blockingRisks": [],
+          "findings": [
+            {
+              "description": "Pre-existing acceptance failure: style.css declares '.checkout { display: none; }', so test 'ui: checkout button is visible' (tests/acceptance.test.mjs:7) fails on both the candidate and clean committed baseline tree. Unrelated to and unfixable by this commit (changing style.css is out of scope). Pipeline will not go fully green until the style.css fixture is corrected.",
+              "priority": 2
+            },
+            {
+              "description": "Commit is correctly scoped: only checkout.mjs changed; tests, style.css, index.html, package.json intact; delivery and total keep identical public signatures with quantity defaults ((item.quantity ?? 1)) preserving behavior for items without a quantity field.",
+              "priority": 1
+            }
+          ],
+          "commit": "34eb690f926909daa35a62c05679c1ed172d41e8",
+          "snapshotHash": "766a8dd8fbe5429da37237868d324b326952577b7c96b99261fcef95d186b106"
+        }
+      ],
+      "id": "9d2adb60-277c-4f77-ac98-701a59ffef32",
+      "committedTests": [
+        {
+          "passed": false,
+          "output": "✔ functional: totals include quantity (0.4757ms)\n✖ ui: checkout button is visible (1.9767ms)\n✔ regression: free delivery after correct total (0.0965ms)\nℹ tests 3\nℹ suites 0\nℹ pass 2\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 84.8485\n\n✖ failing tests:\n\ntest at tests\\acceptance.test.mjs:7:1\n✖ ui: checkout button is visible (1.9767ms)\n  AssertionError [ERR_ASSERTION]: The input was expected to not match the regular expression /display\\s*:\\s*none/. Input:\n  \n  '.checkout { display: none; padding: 16px; }\\r\\n'\n  \n      at TestContext.<anonymous> (file:///[fixture]/state/worktrees/review-27fdb376-3511-4d46-86b2-69dc926d3a4e/tests/acceptance.test.mjs:7:53)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1201:25)\n      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)\n      at Test.postRun (node:internal/test_runner/test:1330:19)\n      at Test.run (node:internal/test_runner/test:1258:12)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: '.checkout { display: none; padding: 16px; }\\r\\n',\n    expected: /display\\s*:\\s*none/,\n    operator: 'doesNotMatch',\n    diff: 'simple'\n  }\n"
+        }
+      ],
+      "tests": [
+        {
+          "passed": false,
+          "output": "✔ functional: totals include quantity (0.4374ms)\n✖ ui: checkout button is visible (1.5912ms)\n✔ regression: free delivery after correct total (0.0898ms)\nℹ tests 3\nℹ suites 0\nℹ pass 2\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 67.8406\n\n✖ failing tests:\n\ntest at tests\\acceptance.test.mjs:7:1\n✖ ui: checkout button is visible (1.5912ms)\n  AssertionError [ERR_ASSERTION]: The input was expected to not match the regular expression /display\\s*:\\s*none/. Input:\n  \n  '.checkout { display: none; padding: 16px; }\\r\\n'\n  \n      at TestContext.<anonymous> (file:///[fixture]/state/worktrees/build-9d2adb60-277c-4f77-ac98-701a59ffef32/tests/acceptance.test.mjs:7:53)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1201:25)\n      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)\n      at Test.postRun (node:internal/test_runner/test:1330:19)\n      at Test.run (node:internal/test_runner/test:1258:12)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: '.checkout { display: none; padding: 16px; }\\r\\n',\n    expected: /display\\s*:\\s*none/,\n    operator: 'doesNotMatch',\n    diff: 'simple'\n  }\n"
+        }
+      ]
+    },
+    {
+      "protectedIntact": true,
+      "commit": "79267a78607879a9fa4c7925cff5de1f35101a64",
+      "diff": "diff --git a/checkout.mjs b/checkout.mjs\nindex 0f28e1c..67279b3 100644\n--- a/checkout.mjs\n+++ b/checkout.mjs\n@@ -1,2 +1,2 @@\n-export const total = items => items.reduce((sum, item) => sum + item.price, 0);\n-export const delivery = items => items.reduce((sum, item) => sum + item.price, 0) >= 30 ? 0 : 5;\n+export const total = items => items.reduce((sum, item) => sum + item.price * (item.quantity ?? 1), 0);\n+export const delivery = items => items.reduce((sum, item) => sum + item.price * (item.quantity ?? 1), 0) >= 30 ? 0 : 5;\ndiff --git a/style.css b/style.css\nindex 15a81e5..06db3da 100644\n--- a/style.css\n+++ b/style.css\n@@ -1 +1 @@\n-.checkout { display: none; padding: 16px; }\n+.checkout { padding: 16px; }",
+      "reviews": [
+        {
+          "reviewer": "pi",
+          "verdict": "pass",
+          "reason": "Candidate satisfies the requested CSS change and acceptance criteria. The .checkout rule no longer hides the button and retains padding; order totals and delivery calculations account for quantity.",
+          "evidence": [
+            "style.css:1 .checkout { padding: 16px; }",
+            "checkout.mjs:1-2 multiplies price by quantity defaulting to 1",
+            "tests/acceptance.test.mjs:7 checks absence of display:none",
+            "Provided clean committed tree test results: 3/3 acceptance tests passed"
+          ],
+          "blockingRisks": [],
+          "findings": [],
+          "commit": "79267a78607879a9fa4c7925cff5de1f35101a64",
+          "snapshotHash": "8558fb1f83539de078a24f5256b71899cb451262a2654df662b5592fee9c894f"
+        }
+      ],
+      "id": "9e872629-9a28-4c9b-a41b-3eec9ff1b222",
+      "committedTests": [
+        {
+          "passed": true,
+          "output": "✔ functional: totals include quantity (0.4735ms)\n✔ ui: checkout button is visible (1.3148ms)\n✔ regression: free delivery after correct total (0.2144ms)\nℹ tests 3\nℹ suites 0\nℹ pass 3\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 69.8167\n"
+        }
+      ],
+      "tests": [
+        {
+          "passed": true,
+          "output": "✔ functional: totals include quantity (0.4467ms)\n✔ ui: checkout button is visible (0.4142ms)\n✔ regression: free delivery after correct total (0.1003ms)\nℹ tests 3\nℹ suites 0\nℹ pass 3\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 66.4119\n"
+        }
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "decidedBy": "codex",
+      "reason": "The supplied acceptance evidence shows the current head fails two required criteria, and the free-delivery regression is skipped because subtotal calculation is still incorrect. No acceptance-test edits are needed or allowed; the product code/CSS need repair.",
+      "complete": false,
+      "selected": {
+        "gapId": "gap-total-quantity",
+        "goal": "Update checkout total calculation so each line contributes price multiplied by quantity, defaulting sensibly for missing quantity only if existing code requires it.",
+        "workerId": "codex",
+        "strategy": "repair",
+        "reason": "This directly addresses the highest-priority functional failure and unblocks the free-delivery regression test without touching acceptance tests."
+      }
+    },
+    {
+      "decidedBy": "dsh",
+      "reason": "One of four success criteria remains unmet. The host-run acceptance suite on the current head ec8ddff reports 2 pass / 1 fail: 'functional: totals include quantity' and 'ui: checkout button is visible' pass, but 'regression: free delivery after correct total' fails with 5 !== 0. Static source confirms the cause: checkout.mjs:2 `delivery` still sums bare `item.price` and ignores `quantity`, so for the fixture [{price:10,quantity:3}] it evaluates 10 >= 30 ? 0 : 5 → 5, while tests/acceptance.test.mjs:8 expects 0. The previously rejected action only made `total` quantity-aware and left `delivery` inconsistent, so that route must be replaced with a bounded fix to `delivery` itself. Because `total(items) === 30`, the test's skip branch is not taken and the assertion executes. No new regression outranks this pre-existing failure; the UI/total criteria are already green and need no further work.",
+      "complete": false,
+      "selected": {
+        "gapId": "gap-delivery-quantity",
+        "goal": "Update `delivery` in checkout.mjs to base the free-delivery threshold on the same quantity-aware subtotal as `total` (e.g. `items.reduce((sum, item) => sum + item.price * (item.quantity ?? 1), 0) >= 30 ? 0 : 5`), changing no other file, no test, and no public signature.",
+        "workerId": "dsh",
+        "strategy": "replace",
+        "reason": "The prior candidate's route (touch only `total`) was rejected because it left the dependent delivery calculation quantity-blind; this replacement targets the exact defective expression at checkout.mjs:2 and aligns both exports on one subtotal definition, which is the minimal change that makes all three acceptance tests pass. A single-file, single-expression edit keeps regression risk low and leaves the already-passing UI and total criteria untouched."
+      }
+    },
+    {
+      "decidedBy": "opencode",
+      "reason": "Two of three acceptance tests pass (functional totals, free delivery). The remaining failure is the UI criterion: style.css hardcodes `display: none` on `.checkout`, so the checkout button is not visible and the acceptance test 'ui: checkout button is visible' fails. That is a real, in-scope gap against the goal 'make the checkout interface correct' — previous reviews mis-scoped it as out-of-scope, but style.css is a source file, not a protected acceptance test, and the success criteria require the button to be visible. Fixing it should make all three tests pass.",
+      "complete": false,
+      "selected": {
+        "gapId": "gap-checkout-button-hidden",
+        "goal": "Edit style.css so the `.checkout` rule no longer contains `display: none`, keeping `padding: 16px`, so the Pay now button in index.html is visible and tests/acceptance.test.mjs:7 passes.",
+        "workerId": "opencode",
+        "strategy": "repair",
+        "reason": "checkout.mjs is already correct (functional and regression tests pass). The only failing criterion is button visibility, rooted in the CSS fixture. Removing `display: none` from style.css (e.g. `.checkout { padding: 16px; }`) is a one-line, source-only change — it does not touch tests, main, or public signatures — and makes all three acceptance tests green."
+      }
+    },
+    {
+      "decidedBy": "opencode",
+      "reason": "Every success criterion has direct passing evidence on the committed accepted tree (head 79267a78). Evidence: checkout.mjs:1 makes `total` quantity-aware (`item.price * (item.quantity ?? 1)`), satisfying 'Quantities contribute to order totals'; checkout.mjs:2 makes `delivery` use the identical quantity-aware subtotal with the `>= 30` free-delivery threshold, satisfying 'Orders with subtotal at least 30 receive free delivery'; style.css:1 (`.checkout { padding: 16px; }`) contains no `display: none` and index.html contains the `Pay now` button, satisfying 'The checkout button is visible'. The acceptance run 4b911084-c557-4c6e-8264-17e8dd20f459 reports 3/3 passing (functional totals include quantity, ui checkout button is visible, regression free delivery after correct total) with zero failures, and the acceptance tests were not edited (hash 559b7ec2... unchanged). All supplied criteria pass with accepted review evidence; no gaps and no further candidates.",
+      "complete": true,
+      "selected": null
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "goal": "Resolve all blocking functional and UI defects in the project",
+  "repository": "D:/projects/example",
+  "stateDir": "D:/dsh-state/example",
+  "constraints": ["Do not alter tests", "Do not modify main or push automatically"],
+  "successCriteria": ["Required tests pass", "Independent review reports no blocking regression"],
+  "permissions": { "read": true, "write": true, "shell": false, "network": false, "gitCommit": false },
+  "protectedPaths": ["tests/acceptance.test.mjs"],
+  "tests": [{ "executable": "node", "args": ["--test", "tests/acceptance.test.mjs"] }],
+  "maxActions": 10,
+  "agentTimeoutMs": 300000,
+  "testTimeoutMs": 60000,
+  "decisionAgent": "codex",
+  "agents": {
+    "codex": { "executable": "codex", "capabilities": ["code", "debug", "ui", "review", "security", "reason"] },
+    "opencode": { "executable": "opencode", "capabilities": ["code", "debug", "ui", "review", "security", "reason"] },
+    "pi": { "executable": "pi", "capabilities": ["code", "debug", "ui", "review", "reason"] },
+    "dsh": { "provider": "deepseek-official", "model": "deepseek-v4-flash", "capabilities": ["code", "debug", "ui", "review", "reason"] }
+  }
+}

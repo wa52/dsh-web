@@ -1,0 +1,17 @@
+{
+  "verdict": "pass",
+  "reason": "I found no concrete blocking correctness, security, or lifecycle defect in the supplied source under the stated threat model and intentional design constraints. The mandatory review gate is enforced before acceptedHead advances; review workers are read-only by role policy; process launches require the durable run token in argv; recovery verifies controller and worker process fingerprints before stopping; and evidence/artifact reads are bounded to the evidence directory.",
+  "evidence": [
+    "runtime/project.mjs: review() requires protectedIntact, builder tests, committed clean-tree tests, and all independent reviews to pass before setting MERGE_READY and advancing acceptedHead.",
+    "runtime/project.mjs: policyFor() is applied in execute(), so review and decide roles are forced read-only by runtime/permissions.mjs.",
+    "runtime/process.mjs: ProcessAdapter.start() rejects native launches whose argv lacks task.runKey; launch tokens are durably checkpointed before spawn in runtime/project.mjs: execute().",
+    "runtime/recovery.mjs: recoverInterruptedProject() checks runtime.lock fingerprints and uses stopRecordedRun()/findLaunchProcesses() before marking unfinished runs interrupted.",
+    "runtime/server.mjs: mutation endpoints require strict local Host, matching Origin, custom X-DSH-Control header, and JSON content type; artifact reads delegate to ProjectRuntime.artifact().",
+    "runtime/project.mjs: artifact() resolves real paths and restricts reads to stateDir/evidence with an 8 MiB cap."
+  ],
+  "blockingRisks": [],
+  "findings": [],
+  "runId": "4c4d8b31-17ff-44af-8595-1a71d00fd7d6",
+  "worker": "independent-runtime-review",
+  "sourceUnchanged": true
+}

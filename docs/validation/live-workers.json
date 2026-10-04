@@ -1,0 +1,82 @@
+{
+  "scenario": "Real native write transports, host test, independent reviewer, main unchanged; not autonomous decision E2E",
+  "initialOpenCodeFailure": [
+    {
+      "provider": "opencode",
+      "reviewer": "codex",
+      "status": "FAIL",
+      "phase": "REJECTED",
+      "commit": "c5bec7b60331aeab79d7ef941e7f5eb08bd4966b",
+      "testsPassed": false,
+      "protectedIntact": true,
+      "review": [
+        {
+          "reviewer": "codex",
+          "verdict": "reject"
+        }
+      ]
+    }
+  ],
+  "reports": [
+    {
+      "provider": "codex",
+      "reviewer": "dsh",
+      "status": "PASS",
+      "phase": "MERGE_READY",
+      "commit": "5c203cc99abe542bbb9b32e4c9db551def996474",
+      "testsPassed": true,
+      "protectedIntact": true,
+      "review": [
+        {
+          "reviewer": "dsh",
+          "verdict": "pass"
+        }
+      ]
+    },
+    {
+      "provider": "pi",
+      "reviewer": "codex",
+      "status": "PASS",
+      "phase": "MERGE_READY",
+      "commit": "7b2e1b640e9e564ac55d9b474c2804df089ce148",
+      "testsPassed": true,
+      "protectedIntact": true,
+      "review": [
+        {
+          "reviewer": "codex",
+          "verdict": "pass"
+        }
+      ]
+    },
+    {
+      "provider": "dsh",
+      "reviewer": "codex",
+      "status": "PASS",
+      "phase": "MERGE_READY",
+      "commit": "00e14703de5bbae597c7b333a397ed7044c23cda",
+      "testsPassed": true,
+      "protectedIntact": true,
+      "review": [
+        {
+          "reviewer": "codex",
+          "verdict": "pass"
+        }
+      ]
+    },
+    {
+      "provider": "opencode",
+      "reviewer": "codex",
+      "status": "PASS",
+      "phase": "MERGE_READY",
+      "commit": "3855f1fe82b409913ae79e014b7f22e571b72b20",
+      "testsPassed": true,
+      "protectedIntact": true,
+      "review": [
+        {
+          "reviewer": "codex",
+          "verdict": "pass"
+        }
+      ]
+    }
+  ]
+}

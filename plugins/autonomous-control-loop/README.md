@@ -1,5 +1,10 @@
 # 上层自主控制 Loop
 
+现在提供两个 Host API。下面原有 `create()` 接口和原 DSH agent-loop 保留；
+V1 项目控制器使用 `ctx.autonomousControl.createProject(config, { agents })`，
+包含四种原生 Worker、动态诊断、独立 worktree、强制审核、Web UI 与恢复。
+V1 配置、真实模型验收和当前边界见仓库根目录 [README](../../README.md)。
+
 保留 DSH 原来的 `@deepseek-ai/dsh-agent-loop`。本插件通过 Cordis 提供
 `ctx.autonomousControl`，在 Worker 的一次行动之外运行固定治理流程：
 
@@ -119,3 +124,7 @@ const report = {
 在仓库根目录运行 `npm test`。测试使用本地临时工作区和可控 adapter，覆盖强制审核、
 停止失败、版本变化、拒审修复、重启恢复、锁竞争、DSH 契约和真实 Cordis 插件挂载。
 没有调用付费模型或真实外部 Reviewer。
+
+以上描述仅指低层 `control-loop.test.mjs` 的确定性测试。
+根目录 `scripts/live-e2e.mjs`、`live-workers.mjs` 和 `live-recovery.mjs`
+另外提供真实模型验收，不能与 test-double 结果混用。

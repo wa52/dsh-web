@@ -9,3 +9,5 @@ coverage/
 controller.lock
 world-state.json
 world-state.json.*.tmp
+config.local.json
+*.local.json
