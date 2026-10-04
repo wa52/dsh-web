@@ -1,5 +1,5 @@
 // Protocol fixture only: validates adapters without model calls or credentials.
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync } from 'node:fs';
 const provider = process.env.DSH_PROTOCOL_FIXTURE;
 const args = process.argv.slice(2);
 const line = object => process.stdout.write(JSON.stringify(object) + '\n');
@@ -8,7 +8,8 @@ if (provider === 'codex') {
   writeFileSync(target, '{"summary":"protocol-ok"}');
   line({ type: 'turn.completed' });
 } else if (provider === 'opencode') {
-  line({ type: 'text', part: { text: '{"summary":"protocol-ok"}' } });
+  const prompt = readFileSync(args[args.indexOf('--file') + 1], 'utf8');
+  line({ type: 'text', part: { text: JSON.stringify({ summary: 'protocol-ok', prompt, args }) } });
 } else {
   process.stdin.setEncoding('utf8'); let pending = '';
   process.stdin.on('data', chunk => {

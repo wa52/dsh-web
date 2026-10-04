@@ -82,6 +82,9 @@ node scripts/live-recovery.mjs config.local.json
 记录并注入一次配送回归，要求真实测试和 Reviewer 拒绝，再重新规划。
 报告写入 `.tmp/`。恢复测试验证独立启动故障 fixture，不代表已覆盖所有生产 Harness 故障。
 临时 observe/review worktree 与分支自动清理；候选 build checkout/分支保留供审查、恢复和人工合并。
+OpenCode 的大段提示词使用 `run --file` 附件传输，避免 Windows 命令行长度限制。
+附件与审核证据保存在 Host 的 artifact 目录中；其中可能包含项目源码，应与原始日志一样
+限制本机访问并排除公开上传。文件的 `0600` 模式仅适用于支持 POSIX 权限的平台，不能替代 Windows ACL。
 
 最终完成标准以 [PROJECT_SPEC.md](PROJECT_SPEC.md) 为准。
 具体验收记录见 [validation](docs/validation.md)。

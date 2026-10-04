@@ -102,7 +102,7 @@ export class ProcessAdapter {
   async start(task) {
     if (task.signal?.aborted) throw new Error('Run canceled before start');
     const launchSpec = await this.prepare(task);
-    // Codex output file, Pi guard file, DSH patch file and OpenCode prompt argv
+    // Codex output file, Pi guard file, DSH patch file and OpenCode session title
     // contain the journal token even though RPC/stdin also carries the prompt.
     if (task.runKey && !(launchSpec.args ?? []).some(arg => String(arg).includes(task.runKey))) throw new Error('Native process argv lacks the durable launch token');
     const id = randomUUID();

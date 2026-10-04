@@ -165,6 +165,34 @@ test('four native transports launch and parse their published JSON/RPC formats',
   }
 });
 
+test('OpenCode carries large Unicode review evidence through an attachment and retains its recovery token', async t => {
+  const { root, config } = await setup(t);
+  const entry = fileURLToPath(new URL('./fixtures/agent-cli.mjs', import.meta.url));
+  const adapter = createAgentAdapter('opencode', { executable: process.execPath, argsPrefix: [entry], env: { DSH_PROTOCOL_FIXTURE: 'opencode' } });
+  const runKey = randomUUID();
+  const prompt = '独立审核证据\n'.repeat(20000) + 'END-OF-EVIDENCE';
+  const handle = await adapter.start({ role: 'review', workspace: config.repository, artifactDir: root, runKey, permissions: { write: false }, prompt, timeoutMs: 10_000 });
+  try {
+    const result = await handle.result;
+    assert.ok(result.prompt.includes(prompt), 'Complete evidence including its tail reaches the child');
+    assert.ok(result.prompt.length < prompt.length + 2000);
+    assert.ok(result.args.join(' ').length < 4000);
+    assert.ok(result.args.some(arg => arg.includes(runKey)));
+    assert.equal(adapter.status(handle.id), 'completed');
+  } finally { await handle.dispose(); }
+});
+
+test('concurrent OpenCode calls without run keys keep separate prompt attachments', async t => {
+  const { root, config } = await setup(t);
+  const entry = fileURLToPath(new URL('./fixtures/agent-cli.mjs', import.meta.url));
+  const adapter = createAgentAdapter('opencode', { executable: process.execPath, argsPrefix: [entry], env: { DSH_PROTOCOL_FIXTURE: 'opencode' } });
+  const specs = await Promise.all(['first evidence', 'second evidence'].map(prompt => adapter.prepare({ role: 'review', workspace: config.repository, artifactDir: root, permissions: { write: false }, prompt })));
+  const files = specs.map(spec => spec.args[spec.args.indexOf('--file') + 1]);
+  assert.notEqual(files[0], files[1]);
+  assert.ok((await readFile(files[0], 'utf8')).includes('first evidence'));
+  assert.ok((await readFile(files[1], 'utf8')).includes('second evidence'));
+});
+
 test('worker crash persists failure and reassigns the next action', async t => {
   const { config } = await setup(t);
   const broken = controlledAdapter('code-worker', async () => { throw new Error('worker killed'); }, async () => {});

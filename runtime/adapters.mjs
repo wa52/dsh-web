@@ -38,7 +38,12 @@ async function cliSpec(provider, config, task) {
     const root = task.workspace.replaceAll('\\', '/');
     const permissions = { '*': 'deny', read: permission.read ? 'allow' : 'deny', glob: permission.read ? 'allow' : 'deny', grep: permission.read ? 'allow' : 'deny', list: permission.read ? 'allow' : 'deny', external_directory: 'deny', edit: permission.write ? { '*': 'allow', '../*': 'deny', '..\\*': 'deny', '.git*': 'deny', [`${root}/.git*`]: 'deny' } : 'deny', bash: 'deny', webfetch: 'deny', websearch: 'deny', task: 'deny' };
     let answer = '';
-    return { ...base, args: ['run', '--pure', '--format', 'json', '--dir', task.workspace, ...modelArgs, '--', prompt], stdin: '',
+    // Keep large evidence off Windows argv. Retain this host-owned attachment
+    // beside the existing run logs; the file path also carries the recovery token.
+    const launchKey = task.runKey ?? randomUUID();
+    const promptFile = path.join(task.artifactDir, `${launchKey}-opencode-prompt.txt`);
+    await writeFile(promptFile, prompt, { mode: 0o600 });
+    return { ...base, args: ['run', '--pure', '--format', 'json', '--dir', task.workspace, '--title', `DSH ${launchKey}`, ...modelArgs, '--file', promptFile, '--', 'Follow the complete bounded action in the attached prompt file. Return only one JSON object matching its requested shape.'], stdin: '',
       env: { ...base.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: permissions, agent: { control: { mode: 'primary', permission: permissions } } }) },
       onFrame: frame => { if (frame.type === 'text') answer = frame.part?.text ?? frame.text ?? ''; if (frame.type === 'error') throw new Error(JSON.stringify(frame.error)); },
       finish: () => parseObject(answer), strictFrames: false };
