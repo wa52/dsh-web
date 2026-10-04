@@ -86,4 +86,5 @@ node scripts/live-recovery.mjs config.local.json
 最终完成标准以 [PROJECT_SPEC.md](PROJECT_SPEC.md) 为准。
 具体验收记录见 [validation](docs/validation.md)。
 真实项目试跑及已发现的限制见 [ecommerce stress pilot](docs/ecommerce-stress-pilot.md)。
+真实桌面/移动端购买流程验收见 [ecommerce browser acceptance](docs/ecommerce-browser-acceptance.md)。
 插件接入旧 Host 的示例见 [autonomous-control-loop](plugins/autonomous-control-loop/README.md)。
