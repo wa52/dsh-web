@@ -58,6 +58,11 @@ Windows 建议配置原生 `.exe` 的绝对路径，或 `executable: "node"` 加
   `recovery.restartFromWorktree` 默认关闭。
 
 权限通过原生 Codex sandbox、OpenCode permission、Pi tool hook、DSH sandbox 和 tool guard 实现。
+2026-10-04 的真实电商压力验收发现：原生 Codex CLI 仍继承了 MCP JS 工具，
+并在 `shell: false` 时通过它启动了 `cmd.exe`。当前 Codex adapter 的 connector/plugin 禁用措施
+不足，不能把 shell/network/read-only 配置视为已完整隔离；Windows Job Object 也不能约束
+在外部 MCP 服务里启动的进程。在修复并验证这一边界前，应禁用原生 Codex 的执行角色
+（例如配置 `"roles": []`）；同一 adapter 的恢复入口也受此限制。本次实验已隔离该通道。
 这不是恶意第三方可执行文件的操作系统隔离平台；非 Codex provider 的 unrestricted shell 配置会被拒绝。
 测试命令和插件属于可信 Host 配置。源码注入内容没有调度权限。
 
@@ -80,4 +85,5 @@ node scripts/live-recovery.mjs config.local.json
 
 最终完成标准以 [PROJECT_SPEC.md](PROJECT_SPEC.md) 为准。
 具体验收记录见 [validation](docs/validation.md)。
+真实项目试跑及已发现的限制见 [ecommerce stress pilot](docs/ecommerce-stress-pilot.md)。
 插件接入旧 Host 的示例见 [autonomous-control-loop](plugins/autonomous-control-loop/README.md)。
