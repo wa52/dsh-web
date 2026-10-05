@@ -124,7 +124,7 @@ export class ProcessAdapter {
     const fail = error => {
       if (terminal) return;
       terminal = true; info.status = 'failed'; info.error = redact(error.message); reject(error);
-      if (/usage limit|quota.{0,30}(?:exceed|exhaust)|insufficient_quota/i.test(error.message)) this.availability = 'offline';
+      if (/usage limit|quota.{0,30}(?:exceed|exhaust)|insufficient_quota|Agent run budget exceeded/i.test(error.message) || ['ENOENT', 'ECONNREFUSED', 'ETIMEDOUT'].includes(error.code)) this.availability = 'offline';
     };
     const complete = value => {
       if (terminal) return;
@@ -145,8 +145,13 @@ export class ProcessAdapter {
       while ((index = pending.indexOf('\n')) >= 0) {
         const line = pending.slice(0, index).replace(/\r$/, ''); pending = pending.slice(index + 1);
         if (!line.trim()) continue;
-        try { launchSpec.onFrame?.(JSON.parse(line), { send, complete, fail }); }
-        catch (error) { if (launchSpec.strictFrames) fail(error); }
+        let frame;
+        try { frame = JSON.parse(line); }
+        catch (error) { if (launchSpec.strictFrames) fail(error); continue; }
+        // Non-JSON startup chatter may be tolerated, never a valid protocol
+        // error. OpenCode quota frames previously disappeared in this catch.
+        try { launchSpec.onFrame?.(frame, { send, complete, fail }); }
+        catch (error) { fail(error); }
       }
     });
     child.stderr.on('data', log);

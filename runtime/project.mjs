@@ -9,12 +9,13 @@ import { ModelDecision, REVIEW_SHAPE, validateAssessment } from './decision.mjs'
 import { policyFor } from './permissions.mjs';
 import { runCommand, redact } from './process.mjs';
 import { changedPathRisk, sourceObservation, testSummary } from './governance.mjs';
+import { CommercialLoop } from './commercial.mjs';
 
 const safeError = error => redact(error instanceof Error ? error.message : String(error));
 
 /** Project-level Loop hosted by DSH's control plugin, separate from its Agent loop. */
 export class ProjectRuntime extends EventEmitter {
-  constructor(config, { agents = [], assessment, observe, afterBuild } = {}) {
+  constructor(config, { agents = [], assessment, observe, afterBuild, research } = {}) {
     super();
     if (!config.goal?.trim() || !Array.isArray(config.successCriteria) || !config.successCriteria.length || !config.repository || !config.stateDir || !Array.isArray(config.tests) || !config.tests.length) throw new Error('Goal, repository, stateDir, successCriteria and host-owned tests required');
     this.config = clone(config);
@@ -34,18 +35,25 @@ export class ProjectRuntime extends EventEmitter {
     this.currentRun = null;
     this.persistence = Promise.resolve();
     this.modelDecision = new ModelDecision(this.execute.bind(this), this.registry, config.decisionAgent);
+    if (config.commercialLoop?.enabled) {
+      this.commercial = new CommercialLoop(this, research);
+      this.modelDecision.preferred = () => this.sharedWorker('decide', ['reason']).id;
+      this.modelDecision.execute = this.executeWithHandoff.bind(this);
+    }
   }
 
   async initialize() {
     await this.store.assertOutside(this.repository);
     await this.worktrees.validate();
     const loaded = await this.store.load();
-    const policyHash = hash({ tests: this.config.tests, protectedPaths: this.config.protectedPaths ?? [], constraints: this.config.constraints ?? [] });
+    const policyHash = hash({ tests: this.config.tests, protectedPaths: this.config.protectedPaths ?? [], constraints: this.config.constraints ?? [], commercialLoop: this.config.commercialLoop });
     if (loaded) {
       if (loaded.project.repository !== this.repository || loaded.goal !== this.config.goal || hash(loaded.successCriteria) !== hash(this.config.successCriteria) || hash(loaded.permissions) !== hash(this.config.permissions ?? {})) throw new Error('Project configuration differs from persisted state; create a new stateDir');
       this.state = loaded;
       if (loaded.policyHash && loaded.policyHash !== policyHash) throw new Error('Host tests or constraints differ from persisted policy; create a new stateDir');
       if (!loaded.policyHash) { loaded.policyHash = policyHash; await this.checkpoint(); }
+      const previousAlignment = loaded.alignments?.at(-1);
+      if (this.commercial && previousAlignment?.notesPath) this.lastAlignment = { ...previousAlignment, text: await this.artifact(previousAlignment.notesPath) };
       return clone(loaded);
     }
     this.state = {
@@ -78,6 +86,62 @@ export class ProjectRuntime extends EventEmitter {
       return { ...agent, runs: [...runs.values()].slice(-100) };
     });
     return { world: clone(this.state), agents, running: this.running };
+  }
+
+  sharedWorker(role, capabilities = [], exclude = []) {
+    const id = this.state.sharedWorker ?? this.config.commercialLoop?.worker;
+    const current = this.registry.agents.get(id);
+    if (current && current.availability !== 'offline' && current.roles.includes(role) && capabilities.every(c => current.capabilities.includes(c)) && !exclude.includes(current.id)) return current;
+    const next = this.registry.select({ role, capabilities, exclude }, this.state.agentPerformance);
+    this.state.sharedWorker = next.id;
+    return next;
+  }
+
+  async executeWithHandoff(initial, task) {
+    let agent = initial;
+    const attempted = [];
+    while (true) {
+      attempted.push(agent.id);
+      try {
+        const result = await this.execute(agent, task);
+        this.state.sharedWorker = agent.id;
+        return { ...result, worker: agent.id };
+      } catch (error) {
+        if (agent.availability !== 'offline' || safeError(error).includes('STOP_UNCONFIRMED')) throw error;
+        const snapshot = await this.worktrees.snapshot(task.workspace);
+        const handoff = { id: randomUUID(), from: agent.id, role: task.role, actionId: task.actionId, workspace: task.workspace, snapshotHash: snapshot.hash, error: safeError(error), at: new Date().toISOString(), status: 'waiting' };
+        this.state.handoffs ??= []; this.state.handoffs.push(handoff);
+        await atomicJson(path.join(this.store.directory, 'evidence', handoff.id, 'checkpoint.json'), { ...handoff, snapshot, goal: this.state.goal, prompt: task.prompt, latestAlignment: this.lastAlignment?.text });
+        await this.checkpoint();
+        const next = this.sharedWorker(task.role, task.role === 'build' ? task.capabilities ?? [] : ['reason'], attempted);
+        if ((await this.worktrees.snapshot(task.workspace)).hash !== snapshot.hash) throw new Error('Handoff workspace changed before takeover');
+        if (task.role === 'build') {
+          const action = this.state.actions.find(action => action.id === task.actionId);
+          action.builderIdentities ??= [action.builderIdentity];
+          action.builderIdentities.push(next.identity ?? next.id);
+          action.builderHistory ??= [action.builder]; action.builderHistory.push(next.id);
+          action.builder = next.id; action.builderIdentity = next.identity ?? next.id;
+        }
+        handoff.to = next.id; handoff.status = 'resuming';
+        this.state.sharedWorker = next.id;
+        await this.checkpoint();
+        task = { ...task, prompt: `${task.prompt}\nHandoff: ${agent.id} exhausted quota/unavailable after confirmed stop. Continue this SAME action in the preserved workspace; inspect existing partial changes, do not restart blindly. Previous error: ${handoff.error}. Snapshot: ${snapshot.hash}. Do not commit or schedule another task.` };
+        agent = next;
+      }
+    }
+  }
+
+  async alignment(stage, observation, tree, action, enforce = true) {
+    if (!this.commercial) return;
+    let record;
+    const limit = this.config.commercialLoop.maxAlignmentAttempts ?? 2;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 3) throw new Error('maxAlignmentAttempts must be 1..3');
+    for (let attempt = 0; attempt < limit; attempt++) {
+      record = await this.commercial.stage(stage, observation, tree, action);
+      if (!enforce || !['NEED_RESEARCH', 'WRONG_DIRECTION'].includes(record.audit.outcome)) break;
+    }
+    if (enforce && record.audit.outcome !== 'PASS') throw new Error(`COMMERCIAL_${record.audit.outcome}: ${record.audit.reason}`);
+    return record;
   }
 
   async execute(agent, task) {
@@ -147,6 +211,13 @@ export class ProjectRuntime extends EventEmitter {
 
   async decide(observation, tree) {
     await this.event('DECIDE');
+    // Imperfect diagnosis is input, not permission to execute. Plan and
+    // candidate/completion gates still require independent PASS.
+    await this.alignment('observe-and-prioritize', observation, tree, undefined, false);
+    if (this.lastAlignment) {
+      observation.alignmentAnalysis = this.lastAlignment.text;
+      observation.alignmentAudit = this.lastAlignment.audit;
+    }
     const assessment = this.assessment ? validateAssessment(await this.assessment(clone(this.state), clone(observation), tree.directory)) : await this.modelDecision.assess(this.state, observation, tree.directory);
     // Diagnostics never modify an accepted snapshot.
     if ((await this.worktrees.snapshot(tree.directory)).hash !== observation.snapshot.hash) throw new Error('Decision Agent changed observation worktree');
@@ -159,6 +230,7 @@ export class ProjectRuntime extends EventEmitter {
     if (assessment.complete) {
       if (!observation.tests.every(test => test.passed)) throw new Error('Completion rejected: required tests fail');
       if (observation.head !== this.state.acceptedHead) throw new Error('Completion rejected: candidate has not passed independent review');
+      await this.alignment('commercial-completion', observation, tree);
       this.state.status = 'complete'; await this.event('STOP', { reason: assessment.reason }); return null;
     }
     const priorities = new Map(assessment.gaps.map(gap => [gap.id, gap.priority]));
@@ -166,11 +238,12 @@ export class ProjectRuntime extends EventEmitter {
     if (!candidates.length) throw new Error('Project incomplete but no executable candidate');
     const candidate = candidates[0];
     const previous = this.state.actions.at(-1);
-    const exclude = previous?.phase === 'FAILED' && this.state.agentPerformance[previous.builder]?.consecutiveFailures >= 3 ? [previous.builder] : [];
-    const builder = this.registry.select({ role: 'build', capabilities: candidate.capabilities, risk: candidate.risk, exclude }, this.state.agentPerformance);
+    const exclude = !this.commercial && previous?.phase === 'FAILED' && this.state.agentPerformance[previous.builder]?.consecutiveFailures >= 3 ? [previous.builder] : [];
+    const builder = this.commercial ? this.sharedWorker('build', candidate.capabilities, exclude) : this.registry.select({ role: 'build', capabilities: candidate.capabilities, risk: candidate.risk, exclude }, this.state.agentPerformance);
     const selected = { ...candidate, workerId: builder.id, scoreInputs: clone(this.state.agentPerformance), reason: candidate.rationale ?? assessment.reason };
     decision.selected = selected;
     await this.checkpoint();
+    await this.alignment('plan', { ...observation, proposedAction: selected }, tree);
     return { decision, candidate: selected, builder };
   }
 
@@ -189,7 +262,11 @@ export class ProjectRuntime extends EventEmitter {
     const beforeBuild = await this.worktrees.snapshot(tree.directory);
     await this.event('BUILD', { actionId: id });
     try {
-      action.builderResult = await this.execute(builder, { role: 'build', actionId: id, workspace: tree.directory, prompt: `Goal: ${action.goal}\nProject goal: ${this.state.goal}\nCriteria: ${JSON.stringify(this.state.successCriteria)}\nDiagnosis: ${JSON.stringify(this.state.gaps)}\nCurrent source evidence: ${JSON.stringify(this.lastObservation?.sources ?? {})}\nPrevious review findings: ${JSON.stringify(previous?.reviews ?? [])}\nProtected files must not be changed: ${JSON.stringify(this.config.protectedPaths ?? [])}. Modify source only. Host runs tests and commits after you stop.`, outputSchema: { summary: 'string', filesChanged: ['string'] } });
+      await this.alignment('execution-route', this.lastObservation, tree, action);
+      const activeBuilder = this.commercial ? this.sharedWorker('build', candidate.capabilities) : builder;
+      action.builder = activeBuilder.id; action.builderIdentity = activeBuilder.identity ?? activeBuilder.id;
+      const execute = this.commercial ? this.executeWithHandoff.bind(this) : this.execute.bind(this);
+      action.builderResult = await execute(activeBuilder, { role: 'build', actionId: id, capabilities: candidate.capabilities, workspace: tree.directory, outputFormat: this.commercial ? 'text' : undefined, prompt: `Goal: ${action.goal}\nProject goal: ${this.state.goal}\nCriteria: ${JSON.stringify(this.state.successCriteria)}\nDiagnosis: ${JSON.stringify(this.state.gaps)}\nAlignment feedback: ${this.lastAlignment?.text ?? ''}\nCurrent source evidence: ${JSON.stringify(this.lastObservation?.sources ?? {})}\nHost observation and live contracts: ${JSON.stringify({ ...this.lastObservation, sources: undefined, snapshot: { hash: this.lastObservation?.snapshot?.hash } })}\nPrevious review findings: ${JSON.stringify(previous?.reviews ?? [])}\nProtected files must not be changed: ${JSON.stringify(this.config.protectedPaths ?? [])}. Modify source only. Check alignment during execution. If the route is wrong, report it rather than silently expanding scope. Host runs tests and commits after you stop.`, outputSchema: { summary: 'string', filesChanged: ['string'] } });
       if (this.afterBuild) {
         const evidence = await this.afterBuild(clone(action), tree.directory);
         if (evidence) this.state.evidence.push({ kind: 'environment-event', actionId: id, ...clone(evidence) });
@@ -197,7 +274,7 @@ export class ProjectRuntime extends EventEmitter {
       if ((await this.worktrees.snapshot(tree.directory)).hash === beforeBuild.hash) {
         action.phase = 'NO_CHANGE'; action.finishedAt = new Date().toISOString();
         this.state.failures.push({ actionId: id, worker: builder.id, error: 'No source change; no commit or accepted progress', at: action.finishedAt });
-        updatePerformance(this.state, builder.id, false);
+        updatePerformance(this.state, action.builder, false);
         await this.event('UPDATE', { actionId: id, outcome: 'NO_CHANGE' });
         return action;
       }
@@ -221,7 +298,7 @@ export class ProjectRuntime extends EventEmitter {
       action.phase = safeError(error).includes('STOP_UNCONFIRMED') ? 'HALTED' : 'FAILED';
       action.error = safeError(error);
       this.state.failures.push({ actionId: id, worker: builder.id, error: action.error, at: new Date().toISOString() });
-      updatePerformance(this.state, builder.id, false);
+      updatePerformance(this.state, action.builder, false);
       await this.event(action.phase === 'HALTED' ? 'STOP' : 'REPLAN', { actionId: id, error: action.error });
       if (action.phase === 'HALTED') throw error;
       return action;
@@ -252,9 +329,9 @@ export class ProjectRuntime extends EventEmitter {
     action.reviews ??= [];
     const reviewers = [];
     for (const capability of required.slice(action.reviews.length)) {
-      const usedIdentities = [action.builderIdentity ?? action.builder, ...action.reviews.map(review => this.registry.agents.get(review.reviewer)?.identity ?? review.reviewer), ...reviewers.map(other => other.identity ?? other.id)];
+      const usedIdentities = [...(action.builderIdentities ?? [action.builderIdentity ?? action.builder]), ...action.reviews.map(review => this.registry.agents.get(review.reviewer)?.identity ?? review.reviewer), ...reviewers.map(other => other.identity ?? other.id)];
       const identityExclusions = [...this.registry.agents.values()].filter(agent => usedIdentities.includes(agent.identity ?? agent.id)).map(agent => agent.id);
-      reviewers.push(this.registry.select({ role: 'review', capabilities: [capability], risk: action.risk, exclude: [action.builder, ...action.reviews.map(review => review.reviewer), ...identityExclusions, ...reviewers.map(agent => agent.id)] }, this.state.agentPerformance));
+      reviewers.push(this.registry.select({ role: 'review', capabilities: [capability], risk: action.risk, exclude: [action.builder, ...(action.builderHistory ?? []), ...action.reviews.map(review => review.reviewer), ...identityExclusions, ...reviewers.map(agent => agent.id)] }, this.state.agentPerformance));
     }
     action.phase = 'REVIEWING';
     await this.event('REVIEW', { actionId: action.id });
@@ -266,6 +343,7 @@ export class ProjectRuntime extends EventEmitter {
         const tree = await this.worktrees.create(randomUUID(), 'review', action.commit);
         activeTree = tree;
         if (!action.committedTests) action.committedTests = await this.tests(tree.directory, `${action.id}-committed`);
+        if (this.commercial && !action.commercialReview) action.commercialReview = await this.alignment('verify', { ...this.lastObservation, tests: testSummary(action.committedTests) }, tree, action, false);
         const initial = await this.worktrees.snapshot(tree.directory);
         activeSnapshot = initial;
         const actionDiff = action.actionDiff ?? await this.worktrees.diff(action.worktree);
@@ -281,7 +359,7 @@ export class ProjectRuntime extends EventEmitter {
         await this.worktrees.remove(tree);
         activeTree = null;
       }
-      const pass = action.protectedIntact === true && action.tests.every(test => test.passed) && action.committedTests.every(test => test.passed) && action.reviews.length === required.length && action.reviews.every(review => review.verdict === 'pass' && review.blockingRisks.length === 0);
+      const pass = (!this.commercial || action.commercialReview?.audit.outcome === 'PASS') && action.protectedIntact === true && action.tests.every(test => test.passed) && action.committedTests.every(test => test.passed) && action.reviews.length === required.length && action.reviews.every(review => review.verdict === 'pass' && review.blockingRisks.length === 0);
       action.phase = pass ? 'MERGE_READY' : 'REJECTED';
       action.finishedAt = new Date().toISOString();
       if (pass) {
@@ -332,7 +410,7 @@ export class ProjectRuntime extends EventEmitter {
       }
       if (this.state.status !== 'complete') { this.state.status = this.pauseRequested ? 'paused' : 'budget-exhausted'; await this.event('STOP', { reason: this.state.status }); }
     } catch (error) {
-      if (this.state) { this.state.status = 'stopped'; this.state.lastError = safeError(error); await this.event('STOP', { error: safeError(error) }); }
+      if (this.state) { this.state.status = safeError(error).startsWith('COMMERCIAL_') ? 'blocked' : 'stopped'; this.state.lastError = safeError(error); await this.event('STOP', { error: safeError(error) }); }
       throw error;
     } finally {
       this.running = false;

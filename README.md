@@ -16,6 +16,11 @@ Observe → Diagnose → Candidates → Select Worker → One Action
 Codex、OpenCode、Pi、DSH 使用统一的 start/send/cancel/status/result 契约，
 分别通过原生 CLI JSON 或 SDK/RPC 运行。控制 Loop 没有固定的 Agent 队列。
 
+可选的 `commercialLoop` 增加自由文本对标、阶段独立审核和额度交接。
+当前工作平台持续研究、决策和执行；额度不足后确认停止，再由另一平台接续现场。
+初步差距分析的 PARTIAL 会交给决策使用，计划、执行路线、候选验收和最终完成仍有独立 Gate。
+配置、研究回调与边界见 [共同商业 Loop 使用说明](docs/commercial-loop-runtime.md)。
+
 ## 启动
 
 需要 Node.js 22+、Git，以及你要启用的 CLI 和各自登录凭证。

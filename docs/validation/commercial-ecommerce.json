@@ -1,0 +1,245 @@
+{
+  "at": "2026-10-05T10:43:44.021Z",
+  "scenario": "Real OpenCode ecommerce bounded action, Host recovery after Builder completion-format failure, real tests and independent commercial/security/code reviews",
+  "native": true,
+  "scriptedDecision": false,
+  "suppliedTodoOrder": false,
+  "status": "budget-exhausted",
+  "candidateStatus": "REJECTED",
+  "worker": "opencode",
+  "model": "opencode-go/deepseek-v4.1-flash",
+  "originalFilesChecked": 294,
+  "originalChanged": [],
+  "acceptedHead": "fcf85544a753a6ce73c9f14a82cde1edcd49e900",
+  "candidateCommit": "abc6515d72784f32d4152e129d6eebb277839336",
+  "mainAutomaticallyMerged": false,
+  "commercialReady": false,
+  "hostIntervention": "After confirmed Worker stop, Host sealed and reviewed partial changes left by the old JSON completion parser; not a fully unattended recovery proof.",
+  "changedFiles": 4,
+  "addedLines": 215,
+  "removedLines": 26,
+  "browser": {
+    "status": "PASS",
+    "checks": 36,
+    "passed": 36,
+    "freshGuestOrderProof": [
+      {
+        "name": "desktop fresh guest order fetched from Saleor",
+        "passed": true,
+        "serverOrderRetrieved": true
+      },
+      {
+        "name": "mobile fresh guest order fetched from Saleor",
+        "passed": true,
+        "serverOrderRetrieved": true
+      }
+    ],
+    "limitations": [
+      "Single-variant product fixture; multi-variant selector not established",
+      "Merchant key isolation uses a sentinel; real merchant authentication not established",
+      "Dummy payments only; no real payment verification",
+      "390px and 1440px tested, not all devices"
+    ]
+  },
+  "hostTests": {
+    "builderPassed": false,
+    "committedPassed": false,
+    "blockers": [
+      "New candidate fallback order(token:) is invalid against the deployed Saleor schema",
+      "Pre-existing checkoutLineDelete response selects nonexistent lineId; old browser coverage missed cart deletion"
+    ],
+    "note": "Browser URL path and history selectors were corrected for legitimate token parameters; final committed browser checks pass 36/36. Host aggregate still fails schema validation."
+  },
+  "alignments": [
+    {
+      "stage": "observe-and-prioritize",
+      "worker": "opencode",
+      "reviewer": "dsh",
+      "outcome": "PARTIAL",
+      "sources": [
+        {
+          "title": "Saleor production storefront",
+          "url": "https://raw.githubusercontent.com/saleor/storefront/main/README.md",
+          "verified": true
+        },
+        {
+          "title": "Next.js Commerce storefront",
+          "url": "https://raw.githubusercontent.com/vercel/commerce/main/README.md",
+          "verified": true
+        },
+        {
+          "title": "Shopify storefront currency semantics",
+          "url": "https://shopify.dev/docs/storefronts/themes/pricing-payments/currency-formatting",
+          "verified": true
+        },
+        {
+          "title": "W3C form interaction/accessibility reference",
+          "url": "https://www.w3.org/WAI/tutorials/forms/labels/",
+          "verified": true
+        }
+      ]
+    },
+    {
+      "stage": "observe-and-prioritize",
+      "worker": "opencode",
+      "reviewer": "dsh",
+      "outcome": "PASS",
+      "sources": [
+        {
+          "title": "Saleor production storefront",
+          "url": "https://raw.githubusercontent.com/saleor/storefront/main/README.md",
+          "verified": true,
+          "truncated": true
+        },
+        {
+          "title": "Next.js Commerce storefront",
+          "url": "https://raw.githubusercontent.com/vercel/commerce/main/README.md",
+          "verified": true,
+          "truncated": false
+        },
+        {
+          "title": "Shopify storefront currency semantics",
+          "url": "https://shopify.dev/docs/storefronts/themes/pricing-payments/currency-formatting",
+          "verified": true,
+          "truncated": false
+        },
+        {
+          "title": "W3C form interaction/accessibility reference",
+          "url": "https://www.w3.org/WAI/tutorials/forms/labels/",
+          "verified": true,
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "stage": "plan",
+      "worker": "opencode",
+      "reviewer": "dsh",
+      "outcome": "PASS",
+      "sources": [
+        {
+          "title": "Saleor production storefront",
+          "url": "https://raw.githubusercontent.com/saleor/storefront/main/README.md",
+          "verified": true,
+          "truncated": true
+        },
+        {
+          "title": "Next.js Commerce storefront",
+          "url": "https://raw.githubusercontent.com/vercel/commerce/main/README.md",
+          "verified": true,
+          "truncated": false
+        },
+        {
+          "title": "Shopify storefront currency semantics",
+          "url": "https://shopify.dev/docs/storefronts/themes/pricing-payments/currency-formatting",
+          "verified": true,
+          "truncated": false
+        },
+        {
+          "title": "W3C form interaction/accessibility reference",
+          "url": "https://www.w3.org/WAI/tutorials/forms/labels/",
+          "verified": true,
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "stage": "execution-route",
+      "worker": "opencode",
+      "reviewer": "dsh",
+      "outcome": "PASS",
+      "sources": [
+        {
+          "title": "Saleor production storefront",
+          "url": "https://raw.githubusercontent.com/saleor/storefront/main/README.md",
+          "verified": true,
+          "truncated": true
+        },
+        {
+          "title": "Next.js Commerce storefront",
+          "url": "https://raw.githubusercontent.com/vercel/commerce/main/README.md",
+          "verified": true,
+          "truncated": false
+        },
+        {
+          "title": "Shopify storefront currency semantics",
+          "url": "https://shopify.dev/docs/storefronts/themes/pricing-payments/currency-formatting",
+          "verified": true,
+          "truncated": false
+        },
+        {
+          "title": "W3C form interaction/accessibility reference",
+          "url": "https://www.w3.org/WAI/tutorials/forms/labels/",
+          "verified": true,
+          "truncated": false
+        }
+      ]
+    },
+    {
+      "stage": "verify",
+      "worker": "opencode",
+      "reviewer": "dsh",
+      "outcome": "REGRESSION",
+      "sources": [
+        {
+          "title": "Saleor production storefront",
+          "url": "https://raw.githubusercontent.com/saleor/storefront/main/README.md",
+          "verified": true,
+          "truncated": true
+        },
+        {
+          "title": "Next.js Commerce storefront",
+          "url": "https://raw.githubusercontent.com/vercel/commerce/main/README.md",
+          "verified": true,
+          "truncated": false
+        },
+        {
+          "title": "Shopify storefront currency semantics",
+          "url": "https://shopify.dev/docs/storefronts/themes/pricing-payments/currency-formatting",
+          "verified": true,
+          "truncated": false
+        },
+        {
+          "title": "W3C form interaction/accessibility reference",
+          "url": "https://www.w3.org/WAI/tutorials/forms/labels/",
+          "verified": true,
+          "truncated": false
+        }
+      ]
+    }
+  ],
+  "commercialReview": {
+    "outcome": "REGRESSION",
+    "blockers": [
+      "Introduced: ORDER_TOKEN_ARG_QUERY (frontend/services/saleor.ts:745-750) is a knowingly invalid GraphQL document that fails the host committed-tree contract validation; test-0 exits 1. It must be removed (or guarded so it is not shipped), and the confirmation route should add referrerpolicy while doing so.",
+      "Pre-existing but unresolved core-flow blocker: checkoutLineDelete selects the non-existent `lineId` field (saleor.ts:394-403), invalidating cart deletion and the quantity->0 path (cart/page.tsx:41,60,120); it is untested by the protected browser suite and needs a contract fix plus coverage.",
+      "Evidence limitation: the positive proof that anonymous orderByToken is reachable and returns the order rests on the committed host browser run the analysis cites (fresh guest order fetched with serverOrderRetrieved:true); only schema-level validity of orderByToken is directly corroborated in the supplied payload, and the analysis itself notes the earlier 32/34 browser FAIL is not fully explained by code alone."
+    ]
+  },
+  "reviews": [
+    {
+      "reviewer": "dsh",
+      "verdict": "reject",
+      "reason": "This delta delivers the stated capability (order retrieval by returned token, honest not-found/expired-link state, getLastOrder fallback) and the committed-tree browser report confirms it functionally (36/36 PASS, including 'desktop/mobile fresh guest order fetched from Saleor'). However, the clean committed-tree host run still exits 1 ('test-0 exited 1'), and part of that failure is directly attributable to this delta: it adds ORDER_TOKEN_ARG_QUERY ({ order(token: $token) }), a GraphQL document that is permanently invalid against the project's Saleor 3.23 schema and is reported by the host 'storefront GraphQL contract validation' check as 'Unknown argument \"token\" on field \"order\" of type \"Query\"'. It is never reached at runtime (orderByToken succeeds), so it is dead fallback code that only pollutes the contract gate; the sibling invalid lineId selection is pre-existing and not caused by this delta. In addition, the order capability token is now propagated in URL query strings from the payment redirect and account links with no Referrer-Policy configured and no log redaction, exposing a bearer-style credential to browser history and server/proxy access logs, which conflicts with the project's documented 'tokens not written to logs' posture. The core security model is otherwise sound (token-gated access, no order-number enumeration, no auth bypass, anonymous fetch sends no Authorization header, no XSS, currency preserved), but success criterion 4 (committed-tree tests pass) is not met and the new contract violation is a concrete regression introduced here.",
+      "blockingRisks": [
+        "Committed-tree acceptance run is red (test-0 exits 1) and this delta adds a new, always-schema-invalid GraphQL document (order(token:)) flagged by the host 'storefront GraphQL contract validation'; success criterion 4 (committed-tree tests pass) is not satisfied.",
+        "Order capability token is placed in URL query strings with no Referrer-Policy or log redaction (medium severity; not the sole blocker)."
+      ]
+    },
+    {
+      "reviewer": "pi",
+      "verdict": "reject",
+      "reason": "The committed candidate does improve the browser fresh-context order flow, but it leaves the committed-tree host test failing. The new fallback GraphQL document `order(token:)` is invalid against the tested Saleor schema and is picked up by storefront GraphQL contract validation, causing the required test suite to exit non-zero.",
+      "blockingRisks": [
+        "Committed-tree validation still fails; protected acceptance criteria require tests to pass.",
+        "Invalid GraphQL document may break generated/validated storefront deployments even if runtime fallback is rarely used."
+      ]
+    }
+  ],
+  "pending": [
+    "Remove invalid fallback and fix cart deletion contract through a new independently reviewed action",
+    "Re-run an end-to-end commercial action with the new Builder prose completion and live contract context without Host intervention",
+    "Provide general search/vision research Host capabilities and test longer runs",
+    "Real payments and production operations remain NOT_VERIFIED"
+  ]
+}

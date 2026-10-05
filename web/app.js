@@ -40,6 +40,10 @@ function render(data) {
     row.append(goal, node('td', action.builder), status, node('td', action.reviews.map(review => `${review.reviewer}: ${review.verdict}`).join('\n') || '待审核'), node('td', seconds), node('td', action.commit?.slice(0, 10) ?? '—', 'mono')); return row;
   }));
   const evidence = [];
+  for (const alignment of [...(world?.alignments ?? [])].reverse().slice(0, 5)) {
+    evidence.push([`${alignment.stage} · 对标建议`, alignment.notesPath]);
+    evidence.push([`${alignment.audit.outcome} · 对齐审核`, `evidence/${alignment.id}/alignment.json`]);
+  }
   for (const action of actions) {
     if (action.diffPath) evidence.push([`${action.id.slice(0, 6)} · Diff`, `evidence/${action.id}/change.diff`]);
     if (action.tests) evidence.push([`${action.id.slice(0, 6)} · Tests`, `evidence/${action.id}/tests.json`]);

@@ -12,8 +12,12 @@ if (provider === 'codex') {
   line({ type: 'turn.completed' });
   }
 } else if (provider === 'opencode') {
-  const prompt = readFileSync(args[args.indexOf('--file') + 1], 'utf8');
+  if (process.env.DSH_PROTOCOL_QUOTA) {
+    line({ type: 'error', error: { message: 'Usage limit exceeded' } });
+  } else {
+  const prompt = args.flatMap((arg, index) => arg === '--file' ? [readFileSync(args[index + 1], 'utf8')] : []).join('');
   line({ type: 'text', part: { text: JSON.stringify({ summary: 'protocol-ok', prompt, args }) } });
+  }
 } else {
   process.stdin.setEncoding('utf8'); let pending = '';
   process.stdin.on('data', chunk => {

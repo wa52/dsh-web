@@ -6,6 +6,10 @@
 本页下表是 2026-10-04 的初始验收。2026-10-05 的治理修复已完成 47/47 回归测试、
 Codex 边界/实际写入重测、真实动态 Loop 和独立 Pi 源码复审；详见 [最新治理修复验收](governance-repair.md)。
 
+2026-10-05 新增可选共同商业 Loop，保留原模式，完成 62/62 全量测试与独立 Pi 源码审核。
+真实 OpenCode 电商实验发现上下文截断、初步分析过早阻塞、Builder 结果格式及接口证据传递问题并修复。
+详见 [商业 Loop 实验报告](commercial-loop-pilot.md) 和 [Runtime 验证记录](validation/commercial-runtime.json)。
+
 | 验证 | 结果 | 证据 |
 | --- | --- | --- |
 | 原 loop 兼容与项目治理测试 | 36/36 PASS | `npm test`，包含真进程、Git worktree 和 HTTP 测试 |
