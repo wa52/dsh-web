@@ -137,7 +137,16 @@ export class ProjectRuntime extends EventEmitter {
     const limit = this.config.commercialLoop.maxAlignmentAttempts ?? 2;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 3) throw new Error('maxAlignmentAttempts must be 1..3');
     for (let attempt = 0; attempt < limit; attempt++) {
-      record = await this.commercial.stage(stage, observation, tree, action);
+      // A NEED_RESEARCH/WRONG_DIRECTION retry must change the available evidence
+      // rather than only repeat analysis against the same failed cache: the retry
+      // context tells the stage which references already failed and asks for new
+      // candidate URLs so the bounded recovery path can actually change sources.
+      const retry = attempt === 0 || !record ? null : {
+        attempt,
+        priorOutcome: record.audit.outcome,
+        priorSources: record.sources.map(source => source.url).filter(Boolean),
+      };
+      record = await this.commercial.stage(stage, observation, tree, action, retry);
       if (!enforce || !['NEED_RESEARCH', 'WRONG_DIRECTION'].includes(record.audit.outcome)) break;
     }
     if (enforce && record.audit.outcome !== 'PASS') throw new Error(`COMMERCIAL_${record.audit.outcome}: ${record.audit.reason}`);
