@@ -63,6 +63,9 @@ Host 验收可以放在项目仓库之外，从工作目录检查新生成的产
 它用 `createBriefFixture` 生成仅含产品说明与一次初始提交的仓库，把 Host 验收脚本放在产品仓库之外，
 由原生 OpenCode 通过 `ctx.autonomousControl.createProject` 构建产品，再由非 Codex 平台独立审核。
 入口先证明该 Host 验收在裸说明上失败，再要求 Builder 树与干净提交树都通过，主 checkout 未变、重启状态一致。
+被接受的候选还必须由原生 OpenCode 最终实现且没有额度交接；其它 provider 接管即使达到 `MERGE_READY`
+也会作为一个独立的非 PASS 检查如实呈现。这是该有限验收入口的边界，不是产品缺陷。
+入口拒绝复用已存在的输出目录/stateDir，`start` 或状态读取抛出异常时也写入 FAIL 报告而不是中断。
 报告 PASS 指候选达到 `MERGE_READY`，不是 `state.status === "complete"`；最终完成审核的 outcome 单独记录。
 需要新的输出目录，Codex 不注册（不假设其额度可用）；额度不足时仍按交接规则处理，失败如实报告。
 这只是有限、可复现的原生验收入口，不是完整商业产品交付证明，也没有替代已有项目演进实验。

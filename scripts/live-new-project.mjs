@@ -9,12 +9,17 @@ import * as control from '../plugins/autonomous-control-loop/index.js';
 import { createAgentAdapter } from '../runtime/adapters.mjs';
 import { atomicJson } from '../runtime/store.mjs';
 import { createBriefFixture, newProjectConfig } from './fixture.mjs';
+import { assembleNewProjectReport } from './new-project-report.mjs';
 
 if (!process.argv[2]) throw new Error('Live new-project acceptance uses real configured models: node scripts/live-new-project.mjs config.local.json [dir]');
 const options = JSON.parse(await readFile(process.argv[2], 'utf8'));
 const root = process.argv[3] ? path.resolve(process.argv[3]) : path.resolve('.tmp', `live-new-project-${randomUUID()}`);
 const repository = path.join(root, 'repo');
-if (existsSync(repository)) throw new Error(`Refusing to reuse an existing product directory: ${repository}. Choose a new output directory for a fresh acceptance run.`);
+const stateDir = path.join(root, 'state');
+// A fresh, isolated run is required. Refuse an existing output root or state
+// directory so a stale world.json with prior MERGE_READY evidence can never be
+// reused when the repository directory happens to be absent.
+if (existsSync(root) || existsSync(repository) || existsSync(stateDir)) throw new Error(`Refusing to reuse an existing output directory: ${root}. Choose a new output directory for a fresh acceptance run.`);
 await mkdir(root, { recursive: true });
 
 // The goal requires native OpenCode as the builder plus an independent, non-Codex
@@ -33,9 +38,7 @@ const acceptance = fileURLToPath(new URL('./new-project-acceptance.mjs', import.
 const precheckEnv = { ...process.env };
 delete precheckEnv.NODE_TEST_CONTEXT;
 const precheck = spawnSync(process.execPath, [acceptance], { cwd: repository, encoding: 'utf8', windowsHide: true, env: precheckEnv });
-// A genuine acceptance failure is a non-zero exit without a spawn error; a
-// spawn error means the precheck itself did not run and must not count as proof.
-const precheckFailedOnBrief = precheck.status !== 0 && !precheck.error;
+const precheckResult = { status: precheck.status, signal: precheck.signal, error: precheck.error?.message ?? null };
 
 const config = newProjectConfig(fixture, { root, acceptance, options });
 const initialHead = execFileSync('git', ['-C', repository, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -48,47 +51,30 @@ runtime.on('state', view => console.log(`${view.world.phase} ${view.world.action
 let state, error;
 try { state = await runtime.start(); } catch (failure) { error = failure.message; state = runtime.state; }
 await fiber.dispose();
-// An early initialization failure (for example a repository that is not a Git
-// root) leaves no world state. Report FAIL honestly instead of crashing here.
-state ??= { status: 'not-initialized', actions: [], alignments: [] };
 
-const mergeReady = state.actions.filter(action => action.phase === 'MERGE_READY');
-const candidate = mergeReady.at(-1);
-const tests = candidate?.tests ?? [];
-const committedTests = candidate?.committedTests ?? [];
-const reviews = candidate?.reviews ?? [];
-const mainHead = await runtime.worktrees.git(config.repository, ['rev-parse', 'HEAD']);
-const checks = {
-  hostPrecheckFailsOnBrief: precheckFailedOnBrief,
-  mergeReadyCandidate: mergeReady.length >= 1,
-  builderTestsPassed: tests.length === config.tests.length && tests.every(test => test.passed),
-  committedTestsPassed: committedTests.length === config.tests.length && committedTests.every(test => test.passed),
-  opencodeBuilder: Boolean(candidate) && [candidate.builder, ...(candidate.builderHistory ?? [])].includes('opencode'),
-  independentReview: reviews.length > 0 && reviews.every(review => review.reviewer !== candidate.builder && review.verdict === 'pass' && (review.blockingRisks ?? []).length === 0),
-  briefProtected: candidate?.protectedIntact === true,
-  mainUntouched: mainHead === initialHead,
-  restartState: JSON.stringify(await runtime.store.load()) === JSON.stringify(state),
-};
-const completion = (state.alignments ?? []).filter(alignment => alignment.stage === 'commercial-completion').at(-1);
-const completionAudit = completion
-  ? { outcome: completion.audit.outcome, reason: completion.audit.reason, reviewer: completion.audit.reviewer }
-  : { outcome: 'not-reached', reason: 'The decision model did not declare scoped completion; this is reported separately and does not change the bounded MERGE_READY acceptance.' };
-const report = {
-  at: new Date().toISOString(),
-  scenario: 'Native new-project acceptance: brief-only repository, native OpenCode builder, independent non-Codex reviewer, external Host acceptance and mandatory review gates',
-  native: true,
-  scriptedDecision: false,
-  suppliedTodoOrder: false,
-  passDefinition: 'PASS means a candidate reached MERGE_READY with builder-tree and clean-committed-tree external Host acceptance passing and an independent non-Codex review, main unchanged and restart state equal. It is not the same as state.status === "complete" and is not a commercial-readiness claim.',
-  status: Object.values(checks).every(Boolean) ? 'PASS' : 'FAIL',
-  checks,
-  stateStatus: state.status,
-  completionAudit,
-  hostPrecheck: { status: precheck.status, signal: precheck.signal, error: precheck.error?.message ?? null },
-  error,
+// Post-run reads are wrapped so a thrown store/git read cannot abort before the
+// report is written; the failure is recorded and the affected checks go false.
+let mainHead, mainHeadError = null;
+try { mainHead = await runtime.worktrees.git(config.repository, ['rev-parse', 'HEAD']); }
+catch (failure) { mainHeadError = failure.message; }
+
+let restartState, restartStateError = null;
+try { restartState = await runtime.store.load(); }
+catch (failure) { restartStateError = failure.message; }
+
+const { report } = assembleNewProjectReport({
+  state,
+  precheck: precheckResult,
+  initialHead,
+  mainHead,
+  mainHeadError,
+  restartState,
+  restartStateError,
   stateFile: runtime.store.file,
-  actions: state.actions.map(action => ({ id: action.id, goal: action.goal, phase: action.phase, builder: action.builder, builderHistory: action.builderHistory, commit: action.commit, protectedIntact: action.protectedIntact, reviews: action.reviews.map(review => ({ reviewer: review.reviewer, verdict: review.verdict })) })),
-};
+  testCount: config.tests.length,
+  error,
+});
+// Always write the report, on both the success and failure paths.
 await atomicJson(path.join(root, 'acceptance.json'), report);
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== 'PASS') process.exitCode = 1;

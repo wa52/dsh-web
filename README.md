@@ -98,7 +98,10 @@ node scripts/live-new-project.mjs config.local.json
 `live-new-project` 是仅含产品说明的初始提交仓库的原生新项目验收入口：
 `createBriefFixture` 只生成产品说明和一次初始提交，Host 验收脚本放在产品仓库之外并先证明它在裸说明上失败，
 再由原生 OpenCode 通过 `ctx.autonomousControl.createProject` 构建产品，另用非 Codex 平台独立审核；
-候选必须让 Builder 树与干净提交树都通过，主 checkout 未变且重启状态一致。报告中的 PASS 指候选达到
+候选必须让 Builder 树与干净提交树都通过，主 checkout 未变且重启状态一致；被接受的候选还必须由原生
+OpenCode 最终实现且没有额度交接，其它 provider 接管即使达到 `MERGE_READY` 也会作为一个独立的非 PASS
+检查如实呈现，而不是静默通过。入口拒绝复用已存在的输出目录/stateDir，运行 `start` 或读取状态抛出异常时
+也始终写入 FAIL 报告而不是中断。报告中的 PASS 指候选达到
 `MERGE_READY`，不是 `state.status === "complete"`，最终完成审核的 outcome 单独记录。
 该入口是有限、可复现的原生验收入口，不代表完整商业产品交付。
 报告写入 `.tmp/`。恢复测试验证独立启动故障 fixture，不代表已覆盖所有生产 Harness 故障。
