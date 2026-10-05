@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { ProjectRuntime } from '../runtime/project.mjs';
@@ -200,4 +201,50 @@ test('PARTIAL diagnosis feeds decision while an unapproved plan cannot dispatch 
   assert.equal(seen.outcome, 'PARTIAL');
   assert.ok(events.every(event => event.role !== 'build'));
   assert.equal(runtime.state.actions.length, 0);
+});
+
+test('greenfield loop creates a missing product and verifies it without seeded implementation defects', async t => {
+  // Deterministic contract test, not a claim of native autonomous product delivery.
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-greenfield-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repository = path.join(root, 'repo'); await mkdir(repository);
+  await writeFile(path.join(repository, 'README.md'), '# Product brief\nCreate a quantity-aware quotation API for a small catalog.\n');
+  const git = args => execFileSync('git', ['-C', repository, ...args], { stdio: 'pipe' });
+  git(['init', '-b', 'main']); git(['add', '.']);
+  git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', '-c', 'commit.gpgSign=false', 'commit', '-m', 'Product brief only']);
+  const acceptance = path.join(root, 'host-acceptance.mjs');
+  await writeFile(acceptance, `import assert from 'node:assert/strict';\nimport path from 'node:path';\nimport {pathToFileURL} from 'node:url';\nconst {quote}=await import(pathToFileURL(path.join(process.cwd(),'catalog.mjs')));\nassert.equal(quote([{price:5,quantity:3},{price:2,quantity:1}]),17);\nassert.equal(quote([]),0);\n`);
+  const events = [];
+  const agent = id => ({ id, identity: id, roles: ['decide', 'build', 'review'], capabilities: ['reason', 'code', 'review'], availability: 'online', trust: 0.8, cost: 1,
+    async start(task) { events.push({ id, role: task.role }); return { id: randomUUID(), dispose: async () => {}, result: Promise.resolve().then(async () => {
+      if (task.outputFormat === 'text' && task.role === 'decide') {
+        assert.match(task.prompt, /primarily develops NEW products/);
+        return { text: 'A product brief is present but the quotation capability is absent. Construct the smallest quantity-aware API and verify its actual behavior. Reference scope is a test fixture, not a real commerce benchmark.' };
+      }
+      if (task.role === 'build') {
+        await assert.rejects(readFile(path.join(task.workspace, 'catalog.mjs')), { code: 'ENOENT' });
+        await writeFile(path.join(task.workspace, 'catalog.mjs'), 'export const quote = items => items.reduce((sum,item) => sum+item.price*item.quantity,0);\n');
+        return { text: 'Created the missing quotation API; Host must validate it.' };
+      }
+      if (task.outputSchema?.complete) {
+        assert.match(task.prompt, /primary use case is developing NEW products/);
+        let implemented = false; try { await readFile(path.join(task.workspace, 'catalog.mjs')); implemented = true; } catch {}
+        return implemented ? { complete: true, reason: 'Scoped quotation behavior verified', gaps: [], candidates: [] } : { complete: false, reason: 'Product has not been implemented', gaps: [{ id: 'missing-api', description: 'Quotation API absent', priority: 95, evidence: ['Only a product brief exists; Host acceptance fails missing module'] }], candidates: [{ gapId: 'missing-api', goal: 'Create quantity-aware quotation API', capabilities: ['code'], risk: 'normal', strategy: 'replace' }] };
+      }
+      if (task.outputSchema?.outcome) return { outcome: 'PASS', reason: 'Fixture stage evidence checked within narrow scope', evidence: ['product brief and actual Host acceptance'], blockers: [] };
+      return { verdict: 'pass', reason: 'Actual candidate and acceptance checked', evidence: ['quantity-aware quotation implementation'], blockingRisks: [] };
+    }) }; }, describe() { return { id }; } });
+  const runtime = new ProjectRuntime({ repository, stateDir: path.join(root, 'state'), goal: 'Develop a new quantity-aware quotation API', successCriteria: ['Requested quotation API is implemented and passes external Host acceptance'], tests: [{ executable: process.execPath, args: [acceptance] }], commercialLoop: { enabled: true, worker: 'opencode', references: [{ url: 'https://example.com/quotation', text: 'Test fixture reference: quotation totals sum price times quantity.' }] } }, { agents: [agent('opencode'), agent('pi'), agent('dsh')] });
+  t.after(() => runtime.close());
+  await runtime.start({ maxActions: 2 });
+  assert.equal(runtime.state.status, 'complete');
+  assert.equal(runtime.state.actions.length, 1);
+  const action = runtime.state.actions[0];
+  assert.equal(action.phase, 'MERGE_READY');
+  assert.ok(action.tests.every(t => t.passed) && action.committedTests.every(t => t.passed));
+  assert.notEqual(action.reviews[0].reviewer, action.builder);
+  assert.equal(runtime.state.decisions.length, 2, 'Re-observe the newly created product before completion');
+  assert.equal(runtime.state.alignments.at(-1).stage, 'commercial-completion');
+  await assert.rejects(readFile(path.join(repository, 'catalog.mjs')), { code: 'ENOENT' });
+  assert.ok(events.some(event => event.role === 'build'));
 });

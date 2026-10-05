@@ -1,9 +1,9 @@
 {
-  "goal": "Resolve all blocking functional and UI defects in the project",
+  "goal": "Develop a new product from its product brief and initial repository into a usable, independently verified product within the authorized scope",
   "repository": "D:/projects/example",
   "stateDir": "D:/dsh-state/example",
   "constraints": ["Do not alter tests", "Do not modify main or push automatically"],
-  "successCriteria": ["Required tests pass", "Independent review reports no blocking regression"],
+  "successCriteria": ["Core user journeys defined in the product brief are implemented and verified", "UI and functionality are checked against suitable mature references", "Required tests pass", "Independent review reports no blocking issues and deployment unknowns are disclosed"],
   "permissions": { "read": true, "write": true, "shell": false, "network": false, "gitCommit": false },
   "protectedPaths": ["tests/acceptance.test.mjs"],
   "tests": [{ "executable": "node", "args": ["--test", "tests/acceptance.test.mjs"] }],

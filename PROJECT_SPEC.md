@@ -2,6 +2,9 @@
 
 ## 1. 项目定位
 
+首要场景是开发新项目：从产品目标或最小初始仓库出发，自主研究适合的成熟标的，建立产品范围、核心用户流程、功能与 UI，持续验证并迭代到授权范围内可商业使用。
+接手已有项目进行改进、修复和演进是同一 Runtime 的兼容场景，两者都必须独立审核，不能让修 Bug 取代新产品开发能力。
+
 DSH Web 不是新的 Coding Agent，也不替代 Codex、OpenCode、Pi 或 DeepSeek Harness。
 
 2026-10-05 更新：下一阶段以 [商业化共同 Loop 规范](docs/shared-commercial-loop.md) 为准。
@@ -56,6 +59,8 @@ Continue / Replan / Stop
 
 系统必须做到：
 
+- 未实现的产品能力和流程也是 Gap；不存在已有 Bug、源码或 TODO，不等于项目已经完成；
+- 从新项目起步和已有项目演进都按当前状态选择有限行动，不写死搭脚手架、页面和后端的顺序；
 - 不依赖单一 Coding Agent；
 - 不依赖 Builder 主动调用 Reviewer；
 - 不依赖预先写死的任务顺序；

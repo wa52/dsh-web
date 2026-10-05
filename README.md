@@ -1,5 +1,8 @@
 # DSH Web — Multi-Agent Autonomous Runtime
 
+主要用途是从产品目标开发新项目，持续形成经过对标和独立验证的商业可用产品；同时支持接手、修复和演进已有项目。
+空项目的差距包括尚未建立的核心流程、产品能力、UI/UX 和交付条件，不能只搜索已有代码里的 Bug。
+
 保留 DSH 原来的 `agent-loop`，通过 Cordis 插件增加项目控制 Loop。
 控制器根据当前源码、测试、失败与审核重新诊断 Gap，再选择 Worker。
 每个 Worker 只执行一次 Action；进程停止后必须进入独立 Review Gate。

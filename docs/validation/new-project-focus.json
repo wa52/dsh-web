@@ -1,0 +1,50 @@
+{
+  "at": "2026-10-05T10:52:54.166Z",
+  "purpose": "New-project product development is primary; existing-product improvement remains supported.",
+  "tests": {
+    "tests": 63,
+    "passed": 63,
+    "failed": 0
+  },
+  "review": {
+    "verdict": "pass",
+    "reason": "No concrete reproducible defect found in the supplied source. The new-product focus is primary in both commercial alignment and decision prompts while existing-product improvement remains supported. The greenfield fixture is explicitly scoped as a deterministic contract test and does not claim native full commercial delivery. The prior 192.0.0.170/171/8 allowance claim is contradicted by the source: publicAddress destructures [a,b,c] where c is the third octet, so 192.0.0.x has c === 0 and is rejected.",
+    "evidence": [
+      "runtime/decision.mjs: ModelDecision prompt states the primary use case is developing NEW products from a brief and initial repository, while also supporting existing-product improvement.",
+      "runtime/commercial.mjs: CommercialLoop prompt preserves free-form research, requires construction or improvements, emphasizes new/skeletal repositories, and does not impose a fixed sequence.",
+      "tests/commercial-loop.test.mjs: greenfield fixture comment says it is a deterministic contract test, not a claim of native autonomous product delivery.",
+      "runtime/research.mjs: publicAddress rejects 192.0.0.170, 192.0.0.171, and 192.0.0.8 because a === 192, b === 0, and c === 0.",
+      "runtime/project.mjs: executeWithHandoff only resumes after execute has disposed the prior run; STOP_UNCONFIRMED prevents takeover.",
+      "runtime/project.mjs and runtime/commercial.mjs: commercial planning, execution-route, verify, and completion gates are persisted and enforced without overriding Host tests or mandatory review.",
+      "runtime/research.mjs: benchmark fetching is HTTPS-only, DNS-pinned, non-redirecting, public-address checked, and budgeted."
+    ],
+    "blockingRisks": [],
+    "findings": [],
+    "runId": "1596b1d6-8078-4f59-aeae-b7f9704dae1f",
+    "worker": "pi"
+  },
+  "sourceHashFormat": "SHA-256 after LF normalization, matching Git text normalization",
+  "sourceHashes": {
+    "runtime/decision.mjs": "e0e873f532ff8b9ab180f6195dd5a1f20923078d90dab6062c37c724c996d718",
+    "runtime/commercial.mjs": "b6f6183e5c8d8f498dd7dfa661347602851139735433cae38e9ca6c4b497dfd5",
+    "tests/commercial-loop.test.mjs": "9f12d85752fc7b9d9a1e4e30e51d50debecb98e74200244f12f2ca11a838f345"
+  },
+  "greenfield": {
+    "type": "Deterministic contract test with test-double agents; real temporary Git worktrees and Host acceptance processes",
+    "initialRepository": "Product brief README only; no application implementation or seeded bugs",
+    "scope": "Quantity-aware quotation API; not a full commercial product or native autonomous delivery proof",
+    "checks": [
+      "Missing application fails external Host acceptance before construction",
+      "Builder creates missing product functionality",
+      "Builder and clean committed-tree acceptance pass",
+      "Independent review precedes MERGE_READY",
+      "Fresh observation and second global decision precede scoped completion",
+      "Original checkout remains unchanged"
+    ]
+  },
+  "remainingAcceptance": [
+    "Native end-to-end new-product development from a brief, including actual UI and core journeys",
+    "Commercial readiness evidence for deployment and operations within the user scope"
+  ],
+  "currentBoundary": "An initial Git commit and configured Host tests/execution environment are still required"
+}

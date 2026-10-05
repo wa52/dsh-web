@@ -10,6 +10,10 @@ Codex 边界/实际写入重测、真实动态 Loop 和独立 Pi 源码复审；
 真实 OpenCode 电商实验发现上下文截断、初步分析过早阻塞、Builder 结果格式及接口证据传递问题并修复。
 详见 [商业 Loop 实验报告](commercial-loop-pilot.md) 和 [Runtime 验证记录](validation/commercial-runtime.json)。
 
+随后校正首要用途为新项目开发，保留已有项目演进，完成 63/63 全量回归与独立 Pi 源码复审。
+新增产品说明仓库起步的确定性集成测试，覆盖建设缺失功能、外部 Host 验收、独立审核和重新评估。
+这不是完整商业产品的原生模型交付证明；详见 [新项目定位验证](validation/new-project-focus.json)。
+
 | 验证 | 结果 | 证据 |
 | --- | --- | --- |
 | 原 loop 兼容与项目治理测试 | 36/36 PASS | `npm test`，包含真进程、Git worktree 和 HTTP 测试 |
