@@ -1,0 +1,264 @@
+{
+  "at": "2026-10-05T12:29:32.950Z",
+  "sourceBaseline": "0ba85eca6db0baf54054eefef1f9707980a25b05",
+  "acceptedSourceCommit": "7bc731dc2bb3c72e96f918cb2e2c8e853c394051",
+  "purpose": "Prove native system-directed OpenCode construction of a NEW brief-only project, preserve existing evolution, and harden the native acceptance report.",
+  "executionOwnership": {
+    "controller": "DSH autonomous-control Cordis service",
+    "implementation": "Native OpenCode dispatched by the system; DSH continued the first timed-out build. Subsequent repairs were native OpenCode.",
+    "independentReviewer": "Native Pi",
+    "host": "Configured orchestration, ran tests and fault injection, collected evidence, and integrated/published accepted commits. No Host-authored product source."
+  },
+  "outerActions": [
+    {
+      "id": "355aa772-fca1-4042-b72f-28f429049f6c",
+      "goal": "Add a reusable native new-project acceptance harness (scripts/live-new-project.mjs) plus a brief-only fixture (product README and one initial commit, no application source) and external Host acceptance, dispatched through ctx.autonomousControl.createProject with createAgentAdapter('opencode') as the builder and DSH/Pi as the independent reviewer; reuse the existing ProjectRuntime, worktree manager and mandatory review gates, emit a JSON report, and document the actual supported boundary in README and docs/commercial-loop-runtime.md.",
+      "builder": "dsh",
+      "contributors": [
+        "opencode",
+        "dsh"
+      ],
+      "phase": "REJECTED",
+      "commit": "3b1afccdadec65ee5f3ca03744cf9580d6231c48",
+      "protectedIntact": true,
+      "builderTests": [
+        {
+          "passed": true,
+          "testCount": 66,
+          "passCount": 66
+        }
+      ],
+      "committedTests": [
+        {
+          "passed": true,
+          "testCount": 66,
+          "passCount": 66
+        }
+      ],
+      "alignment": "NEED_RESEARCH",
+      "reviews": [
+        {
+          "reviewer": "pi",
+          "verdict": "reject",
+          "reason": "The new-project harness can report PASS from stale persisted state or after runtime.start() throws, so its JSON acceptance result is not reliably tied to a fresh native OpenCode build/review run."
+        }
+      ]
+    },
+    {
+      "id": "81d9d3df-c1b5-443d-aa3d-3fe479877448",
+      "goal": "Repair the native new-project acceptance harness scripts/live-new-project.mjs so its PASS is trustworthy and reproducible: (1) refuse reuse of an existing output root/stateDir, forcing a fresh isolated run; (2) make report.status FAIL whenever runtime.start() throws unless the current fresh run explicitly reached an accepted bounded terminal state, and always write acceptance.json on both success and failure paths instead of aborting; (3) require the accepted candidate's implementing provider to be opencode (candidate.builder) and surface any other-provider handoff as a distinct non-PASS check rather than a silent pass. Add additive deterministic tests for the report/verdict assembly and error path without editing any pre-existing acceptance test.",
+      "builder": "opencode",
+      "contributors": [
+        "opencode"
+      ],
+      "phase": "REJECTED",
+      "commit": "9b1d0cd26df075bb6b2d9332440741be4bb1ba3b",
+      "protectedIntact": true,
+      "builderTests": [
+        {
+          "passed": true,
+          "testCount": 74,
+          "passCount": 74
+        }
+      ],
+      "committedTests": [
+        {
+          "passed": false,
+          "testCount": 60,
+          "passCount": 59
+        }
+      ],
+      "alignment": "NEED_RESEARCH",
+      "reviews": [
+        {
+          "reviewer": "pi",
+          "verdict": "reject",
+          "reason": "Candidate cannot be accepted because the clean committed-tree Host test run failed, despite Builder-tree tests passing."
+        }
+      ]
+    },
+    {
+      "id": "be03ef26-9f12-443c-93e8-987d9d07f5ae",
+      "goal": "In scripts/new-project-report.mjs, tighten hostPrecheckFailsOnBrief so the precheck gate requires a clean, signal-free, non-zero integer exit status with no spawn error (reject null or undefined status and any signal), and add deterministic coverage in tests/new-project-report.test.mjs for the signal-terminated or null-status precheck case without editing any pre-existing acceptance test.",
+      "builder": "opencode",
+      "contributors": [
+        "opencode"
+      ],
+      "phase": "MERGE_READY",
+      "commit": "7bc731dc2bb3c72e96f918cb2e2c8e853c394051",
+      "protectedIntact": true,
+      "builderTests": [
+        {
+          "passed": true,
+          "testCount": 78,
+          "passCount": 78
+        }
+      ],
+      "committedTests": [
+        {
+          "passed": true,
+          "testCount": 78,
+          "passCount": 78
+        }
+      ],
+      "alignment": "PASS",
+      "reviews": [
+        {
+          "reviewer": "pi",
+          "verdict": "pass",
+          "reason": "The candidate tightens the precheck gate to require an integer non-zero status with no signal and no spawn error, and adds deterministic regression coverage for null/signal, undefined status, spawn error, and zero-status cases. Supplied clean-tree host tests pass."
+        }
+      ]
+    }
+  ],
+  "nativeRuns": [
+    {
+      "scenario": "native-new-project",
+      "at": "2026-10-05T11:51:52.416Z",
+      "status": "PASS",
+      "stateStatus": "complete",
+      "native": true,
+      "scriptedDecision": false,
+      "suppliedTodoOrder": false,
+      "checks": {
+        "hostPrecheckFailsOnBrief": true,
+        "mergeReadyCandidate": true,
+        "builderTestsPassed": true,
+        "committedTestsPassed": true,
+        "opencodeBuilder": true,
+        "independentReview": true,
+        "briefProtected": true,
+        "mainUntouched": true,
+        "restartState": true
+      },
+      "completionAudit": {
+        "outcome": "PASS",
+        "reviewer": "pi"
+      },
+      "actions": [
+        {
+          "goal": "Create pricing.mjs implementing export function subtotal(items) returning the sum of price*quantity (0 for empty list) and export function quote(items) returning {subtotal, shipping, total} with shipping=0 when subtotal>=50 else 5, explicit empty-list result {subtotal:0, shipping:0, total:0}, and total=subtotal+shipping; Node built-ins only, no dependencies, plain numbers.",
+          "phase": "MERGE_READY",
+          "builder": "opencode",
+          "contributors": [
+            "opencode"
+          ],
+          "commit": "d4b2ecb95cb20de9ceb4d9d0e05452e6280b96e1",
+          "protectedIntact": true,
+          "reviews": [
+            {
+              "reviewer": "pi",
+              "verdict": "pass"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": "native-new-project-final",
+      "at": "2026-10-05T12:12:53.178Z",
+      "status": "PASS",
+      "stateStatus": "complete",
+      "native": true,
+      "scriptedDecision": false,
+      "suppliedTodoOrder": false,
+      "checks": {
+        "hostPrecheckFailsOnBrief": true,
+        "mergeReadyCandidate": true,
+        "builderTestsPassed": true,
+        "committedTestsPassed": true,
+        "opencodeBuilder": true,
+        "builderHandoffFree": true,
+        "independentReview": true,
+        "briefProtected": true,
+        "mainUntouched": true,
+        "restartState": true,
+        "runtimeErrorFree": true
+      },
+      "completionAudit": {
+        "outcome": "PASS",
+        "reviewer": "pi"
+      },
+      "actions": [
+        {
+          "goal": "Create pricing.mjs at the repo root as an ES module (Node built-ins only, no dependencies, no network, no formatted strings) exporting subtotal(items) and quote(items) exactly per the README, including the empty-list override in quote.",
+          "phase": "MERGE_READY",
+          "builder": "opencode",
+          "contributors": [
+            "opencode"
+          ],
+          "commit": "e4d9cb751dc2d179d6d67638ad4ccf13e8a71661",
+          "protectedIntact": true,
+          "reviews": [
+            {
+              "reviewer": "pi",
+              "verdict": "pass"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": "native-new-project-verified",
+      "at": "2026-10-05T12:28:26.833Z",
+      "status": "PASS",
+      "stateStatus": "budget-exhausted",
+      "native": true,
+      "scriptedDecision": false,
+      "suppliedTodoOrder": false,
+      "checks": {
+        "hostPrecheckFailsOnBrief": true,
+        "mergeReadyCandidate": true,
+        "builderTestsPassed": true,
+        "committedTestsPassed": true,
+        "opencodeBuilder": true,
+        "builderHandoffFree": true,
+        "independentReview": true,
+        "briefProtected": true,
+        "mainUntouched": true,
+        "restartState": true,
+        "runtimeErrorFree": true
+      },
+      "completionAudit": {
+        "outcome": "not-reached"
+      },
+      "actions": [
+        {
+          "goal": "Create root-level pricing.mjs as an ESM module exporting subtotal(items) and quote(items) exactly per the brief: subtotal = sum(price*quantity), 0 for empty; quote returns {subtotal, shipping, total} with shipping 0 when subtotal >= 50 else 5, total = subtotal + shipping, and empty list -> {subtotal:0, shipping:0, total:0}; plain numbers only, no dependencies or network.",
+          "phase": "MERGE_READY",
+          "builder": "opencode",
+          "contributors": [
+            "opencode"
+          ],
+          "commit": "b0d9f1c91790649a8a9f34b836808bb822d90845",
+          "protectedIntact": true,
+          "reviews": [
+            {
+              "reviewer": "pi",
+              "verdict": "pass"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "reportFixes": [
+    "Refuse existing output root/state directory to prevent stale success reuse.",
+    "Runtime or post-run read errors fail the report instead of passing.",
+    "Require final OpenCode implementer and separately reject other-provider build handoff for this specific OpenCode acceptance scenario; the general runtime still supports handoff.",
+    "A precheck requires nonzero integer exit status, no signal and no spawn error."
+  ],
+  "hostInterventions": [
+    "Two initial DSH stage-audit replies had invalid JSON framing and were not accepted. Host resumed with native Pi audits; this run is not presented as fully unattended.",
+    "Worker process budget increased from 300000 to 600000 ms after the first OpenCode timeout. The automatic OpenCode-to-DSH continuation was a TIME budget event, not verified quota exhaustion.",
+    "The second clean-tree run ended a test subprocess early. The original failure was preserved and rejected. Independent same-tree recheck passed 74/74; the final new candidate passed both full Host suites 78/78. The cause of the earlier termination is unproven.",
+    "Host ran a clearly labeled simulated precheck signal-termination test. The model selected its repair; no review verdict or runtime state was replaced."
+  ],
+  "boundaries": [
+    "Final native verification intentionally allows one action: PASS is bounded MERGE_READY acceptance, while stateStatus is budget-exhausted. The preceding two native runs reached scoped complete.",
+    "The fixture is a Node pricing module, not a complete UI/application or proof of commercial readiness.",
+    "The fixture uses an explicitly labeled Host-supplied requirement reference; it does not prove autonomous market or mature UI benchmarking.",
+    "One supplied upstream Harness URL returned 404 and was not treated as verified evidence."
+  ],
+  "sanitization": "No credentials, local configuration, raw provider transcripts or private project source included."
+}
