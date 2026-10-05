@@ -4,6 +4,11 @@
 
 DSH Web 不是新的 Coding Agent，也不替代 Codex、OpenCode、Pi 或 DeepSeek Harness。
 
+2026-10-05 更新：下一阶段以 [商业化共同 Loop 规范](docs/shared-commercial-loop.md) 为准。
+四种平台是同一工作过程的可替换承载者，优先在额度耗尽或不可用时交接，而非固定按平台划分任务。
+研究和对标建议允许自由表达，Host 仅对可执行行动、权限与验收边界做契约校验。
+已发布 V1 的角色/能力路由尚未全部按此规范改造；本文目标不等于当前实现状态。
+
 它是一个 **Multi-Agent Autonomous Runtime / Agent Control Plane**：
 
 - DeepSeek Harness 作为主要运行时与调度核心；
@@ -122,17 +127,13 @@ interface AgentAdapter {
 
 后续新增 Agent 时，不修改核心 Control Loop。
 
-### 3.4 高风险操作优先使用高可信 Worker
+### 3.4 共同工作过程与平台交接
 
-初始策略：
-
-- 复杂跨文件修改：Codex 优先
-- 大型重构：Codex 优先
-- Auth / 权限 / 数据库迁移：Codex 优先
-- Harness 自身维修：Standalone Codex 优先
-- 只读分析 / 探索：Pi / OpenCode / DSH 可参与
-
-后续必须允许基于实际成功率动态调整，而不是永久写死。
+Pi、OpenCode、DSH、Codex 均可承载研究、规划和有限执行的共同工作过程。
+当前平台可用且符合权限时，优先保持工作连续性；额度耗尽、平台故障或用户指定切换时，由 Controller 保存现场并交接。
+风险提高审核深度与证据要求，不把高风险任务永久绑定到某个平台。
+独立审核是系统生命周期：审核者不能与本次 Builder 同身份；可用平台不足时保存现场并等待，不能自审。
+Harness 自身故障仍保留不依赖 Harness 启动的外部恢复入口。
 
 ---
 
