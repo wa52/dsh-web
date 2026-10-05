@@ -6,8 +6,9 @@ import { WorldStore, clone, atomicJson } from './store.mjs';
 import { WorktreeManager, hash } from './worktrees.mjs';
 import { AgentRegistry, updatePerformance } from './registry.mjs';
 import { ModelDecision, REVIEW_SHAPE, validateAssessment } from './decision.mjs';
-import { policyFor, guardPath } from './permissions.mjs';
+import { policyFor } from './permissions.mjs';
 import { runCommand, redact } from './process.mjs';
+import { changedPathRisk, sourceObservation, testSummary } from './governance.mjs';
 
 const safeError = error => redact(error instanceof Error ? error.message : String(error));
 
@@ -134,18 +135,13 @@ export class ProjectRuntime extends EventEmitter {
     const tree = await this.worktrees.create(randomUUID(), 'observe', observedHead);
     const tests = await this.tests(tree.directory, `observe-${this.state.revision}`);
     const snapshot = await this.worktrees.snapshot(tree.directory);
-    const sources = {};
-    let remaining = this.config.sourceBudgetBytes ?? 120_000;
-    for (const file of snapshot.evidence.files) {
-      if (!remaining || file.type !== 'file' || !/\.(?:[cm]?[jt]sx?|py|cs|java|html|css|md|json)$/.test(file.name) || /(?:lock|credentials|auth|secret|\.local\.)/i.test(file.name) || guardPath(tree.directory, file.name)) continue;
-      const content = await readFile(path.join(tree.directory, file.name), 'utf8');
-      if (content.includes('\0')) continue;
-      sources[file.name] = redact(content.slice(0, Math.min(remaining, 32_000)));
-      remaining -= sources[file.name].length;
-    }
+    const { sources, sourceCoverage } = await sourceObservation(tree.directory, snapshot.evidence.files, this.config.sourceBudgetBytes ?? 120_000);
     const extra = this.observeExtra ? await this.observeExtra(clone(this.state), tree.directory) : {};
-    const observation = { ...clone(extra), at: new Date().toISOString(), head: observedHead, acceptedHead: this.state.acceptedHead, tests, snapshot, sources };
-    this.state.evidence.push({ kind: 'observation', ...observation });
+    const observation = { ...clone(extra), at: new Date().toISOString(), head: observedHead, acceptedHead: this.state.acceptedHead, tests: testSummary(tests), snapshot, sources, sourceCoverage };
+    const artifactPath = path.join('evidence', `observe-${this.state.revision}`, 'observation.json');
+    await atomicJson(path.join(this.store.directory, artifactPath), observation);
+    this.lastObservation = observation;
+    this.state.evidence.push({ kind: 'observation', at: observation.at, head: observedHead, acceptedHead: this.state.acceptedHead, artifactPath, snapshotHash: snapshot.hash, tests: observation.tests.map(({ output, ...report }) => report), sourceCoverage });
     return { observation, tree };
   }
 
@@ -190,18 +186,31 @@ export class ProjectRuntime extends EventEmitter {
     this.state.actions.push(action); this.state.riskLevel = action.risk;
     await this.event('DISPATCH', { actionId: id, worker: builder.id });
     const protectedBefore = await this.worktrees.protectedHashes(tree.directory, this.config.protectedPaths ?? []);
+    const beforeBuild = await this.worktrees.snapshot(tree.directory);
     await this.event('BUILD', { actionId: id });
     try {
-      action.builderResult = await this.execute(builder, { role: 'build', actionId: id, workspace: tree.directory, prompt: `Goal: ${action.goal}\nProject goal: ${this.state.goal}\nCriteria: ${JSON.stringify(this.state.successCriteria)}\nDiagnosis: ${JSON.stringify(this.state.gaps)}\nCurrent source evidence: ${JSON.stringify(this.state.evidence.filter(e => e.kind === 'observation').at(-1)?.sources ?? {})}\nPrevious review findings: ${JSON.stringify(previous?.reviews ?? [])}\nProtected files must not be changed: ${JSON.stringify(this.config.protectedPaths ?? [])}. Modify source only. Host runs tests and commits after you stop.`, outputSchema: { summary: 'string', filesChanged: ['string'] } });
+      action.builderResult = await this.execute(builder, { role: 'build', actionId: id, workspace: tree.directory, prompt: `Goal: ${action.goal}\nProject goal: ${this.state.goal}\nCriteria: ${JSON.stringify(this.state.successCriteria)}\nDiagnosis: ${JSON.stringify(this.state.gaps)}\nCurrent source evidence: ${JSON.stringify(this.lastObservation?.sources ?? {})}\nPrevious review findings: ${JSON.stringify(previous?.reviews ?? [])}\nProtected files must not be changed: ${JSON.stringify(this.config.protectedPaths ?? [])}. Modify source only. Host runs tests and commits after you stop.`, outputSchema: { summary: 'string', filesChanged: ['string'] } });
       if (this.afterBuild) {
         const evidence = await this.afterBuild(clone(action), tree.directory);
         if (evidence) this.state.evidence.push({ kind: 'environment-event', actionId: id, ...clone(evidence) });
+      }
+      if ((await this.worktrees.snapshot(tree.directory)).hash === beforeBuild.hash) {
+        action.phase = 'NO_CHANGE'; action.finishedAt = new Date().toISOString();
+        this.state.failures.push({ actionId: id, worker: builder.id, error: 'No source change; no commit or accepted progress', at: action.finishedAt });
+        updatePerformance(this.state, builder.id, false);
+        await this.event('UPDATE', { actionId: id, outcome: 'NO_CHANGE' });
+        return action;
       }
       action.protectedIntact = hash(protectedBefore) === hash(await this.worktrees.protectedHashes(tree.directory, this.config.protectedPaths ?? []));
       action.tests = await this.tests(tree.directory, id);
       action.commit = await this.worktrees.commit(tree, `DSH action ${id}: ${action.goal}`);
       action.snapshot = await this.worktrees.snapshot(tree.directory);
       action.diff = await this.worktrees.diff({ ...tree, base: action.acceptedBase });
+      action.actionDiff = await this.worktrees.diff(tree);
+      const changedPaths = (await this.worktrees.git(tree.directory, ['diff', '--name-only', '-z', `${action.acceptedBase}..${action.commit}`])).split('\0').filter(Boolean);
+      action.riskEvidence = changedPathRisk(changedPaths, action.diff);
+      if (action.riskEvidence.risk === 'high') action.risk = 'high';
+      this.state.riskLevel = action.risk;
       const diffFile = path.join(this.store.directory, 'evidence', id, 'change.diff');
       await writeFile(diffFile, action.diff);
       action.diffPath = diffFile;
@@ -237,11 +246,14 @@ export class ProjectRuntime extends EventEmitter {
     }
     action.reviewAttempts = (action.reviewAttempts ?? 0) + 1;
     if ((await this.worktrees.snapshot(action.worktree.directory)).hash !== action.snapshot.hash) throw new Error('Frozen Builder worktree changed');
-    const required = action.risk === 'high' ? ['review', 'security'] : ['review'];
+    // Allocate the constrained security capability first so a general review
+    // cannot consume the only available security reviewer.
+    const required = action.risk === 'high' ? ['security', 'review'] : ['review'];
     action.reviews ??= [];
     const reviewers = [];
     for (const capability of required.slice(action.reviews.length)) {
-      const identityExclusions = [...this.registry.agents.values()].filter(agent => (agent.identity ?? agent.id) === (action.builderIdentity ?? action.builder) || reviewers.some(other => (other.identity ?? other.id) === (agent.identity ?? agent.id))).map(agent => agent.id);
+      const usedIdentities = [action.builderIdentity ?? action.builder, ...action.reviews.map(review => this.registry.agents.get(review.reviewer)?.identity ?? review.reviewer), ...reviewers.map(other => other.identity ?? other.id)];
+      const identityExclusions = [...this.registry.agents.values()].filter(agent => usedIdentities.includes(agent.identity ?? agent.id)).map(agent => agent.id);
       reviewers.push(this.registry.select({ role: 'review', capabilities: [capability], risk: action.risk, exclude: [action.builder, ...action.reviews.map(review => review.reviewer), ...identityExclusions, ...reviewers.map(agent => agent.id)] }, this.state.agentPerformance));
     }
     action.phase = 'REVIEWING';
@@ -256,19 +268,20 @@ export class ProjectRuntime extends EventEmitter {
         if (!action.committedTests) action.committedTests = await this.tests(tree.directory, `${action.id}-committed`);
         const initial = await this.worktrees.snapshot(tree.directory);
         activeSnapshot = initial;
+        const actionDiff = action.actionDiff ?? await this.worktrees.diff(action.worktree);
         const report = await this.execute(reviewer, { role: 'review', actionId: action.id, workspace: tree.directory, outputSchema: REVIEW_SHAPE,
-          prompt: `Independently review this candidate commit ${action.commit}. Source access is read-only. Do not accept Builder claims as evidence.\nGoal: ${action.goal}\nSuccess criteria: ${JSON.stringify(this.state.successCriteria)}\nActual host test results on Builder tree: ${JSON.stringify(action.tests)}\nActual host tests on clean committed tree: ${JSON.stringify(action.committedTests)}\nDiff from accepted baseline:\n${action.diff}\nProtected files intact: ${action.protectedIntact}\nReject failures, regressions, missing evidence or blocking risks. Do not modify files.`,
+          prompt: `Independently perform ${required[action.reviews.length]} review of this candidate commit ${action.commit}. Source access is read-only. Do not accept Builder claims as evidence.\nGoal: ${action.goal}\nSuccess criteria: ${JSON.stringify(this.state.successCriteria)}\nActual host test results on Builder tree: ${JSON.stringify(action.tests)}\nActual host tests on clean committed tree: ${JSON.stringify(action.committedTests)}\nCurrent action delta from its dispatch base:\n${actionDiff}\nCumulative candidate diff from accepted baseline (includes inherited rejected work):\n${action.diff}\nApply action-specific file scope to the current action delta, not inherited changes. Evaluate the ENTIRE cumulative candidate against project criteria and protected policy.\nProtected files intact: ${action.protectedIntact}\nReject failures, regressions, missing evidence or blocking risks. Do not modify files.`,
         });
         if (!['pass', 'reject', 'needs_more_evidence'].includes(report.verdict) || typeof report.reason !== 'string' || !Array.isArray(report.evidence) || !report.evidence.length || !Array.isArray(report.blockingRisks)) throw new Error('Invalid independent review report');
         if ((await this.worktrees.snapshot(tree.directory)).hash !== initial.hash || (await this.worktrees.snapshot(action.worktree.directory)).hash !== action.snapshot.hash) throw new Error('Reviewer modified source or frozen Builder version');
-        const boundReport = { ...report, reviewer: reviewer.id, actionId: action.id, commit: action.commit, snapshotHash: action.snapshot.hash, worktree: tree };
+        const boundReport = { ...report, reviewer: reviewer.id, capability: required[action.reviews.length], actionId: action.id, commit: action.commit, snapshotHash: action.snapshot.hash, worktree: tree };
         action.reviews.push(boundReport); this.state.reviews.push(boundReport);
         await atomicJson(path.join(this.store.directory, 'evidence', action.id, `review-${reviewer.id}.json`), boundReport);
         await this.checkpoint();
         await this.worktrees.remove(tree);
         activeTree = null;
       }
-      const pass = action.protectedIntact === true && action.tests.every(test => test.passed) && action.committedTests.every(test => test.passed) && action.reviews.every(review => review.verdict === 'pass' && review.blockingRisks.length === 0);
+      const pass = action.protectedIntact === true && action.tests.every(test => test.passed) && action.committedTests.every(test => test.passed) && action.reviews.length === required.length && action.reviews.every(review => review.verdict === 'pass' && review.blockingRisks.length === 0);
       action.phase = pass ? 'MERGE_READY' : 'REJECTED';
       action.finishedAt = new Date().toISOString();
       if (pass) {

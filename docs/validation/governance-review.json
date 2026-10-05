@@ -1,0 +1,15 @@
+{
+  "verdict": "pass",
+  "reason": "No reproducible blocking defect found in the supplied source/diff for the requested governance repair areas. Codex inherited-tool isolation, no-op rejection, high-risk reviewer allocation, observation archiving budget, capability validation, quota quarantine, and decision routing all have host-side enforcement in the provided code.",
+  "evidence": [
+    "runtime/adapters.mjs: Codex uses --ignore-user-config, clears CODEX_* except CODEX_HOME, disables MCP/plugins/hooks/shell/web_search/JS-related features, and uses strict error frames.",
+    "runtime/project.mjs: build() snapshots before Builder execution and marks unchanged work as NO_CHANGE without commit/review/acceptedHead advancement.",
+    "runtime/project.mjs: review() escalates high-risk actions to security + review reviewers, excludes Builder identity aliases, and requires all reviews with empty blockingRisks before MERGE_READY.",
+    "runtime/governance.mjs: sourceObservation() applies byte budget, redaction, omission reporting, and sourceCoverage archive metadata.",
+    "runtime/decision.mjs: validateAssessment() bounds priority, rejects host-governance candidate kind, validates capabilities against registered inventory, and ModelDecision quarantines offline providers."
+  ],
+  "blockingRisks": [],
+  "findings": [],
+  "runId": "c4dcd7fd-d173-46a0-941e-e59835672562",
+  "worker": "pi"
+}

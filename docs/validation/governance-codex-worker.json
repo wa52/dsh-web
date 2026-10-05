@@ -1,0 +1,20 @@
+{
+  "scenario": "Real native write transports, host test, independent reviewer, main unchanged; not autonomous decision E2E",
+  "reports": [
+    {
+      "provider": "codex",
+      "reviewer": "dsh",
+      "status": "PASS",
+      "phase": "MERGE_READY",
+      "commit": "63a9df4315bb5700ee7d9033cb64d5e4778b6e76",
+      "testsPassed": true,
+      "protectedIntact": true,
+      "review": [
+        {
+          "reviewer": "dsh",
+          "verdict": "pass"
+        }
+      ]
+    }
+  ]
+}

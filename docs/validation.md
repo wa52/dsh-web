@@ -3,6 +3,9 @@
 2026-10-04，Windows，Node.js 24。GitHub CI 使用 Windows + Node.js 22。
 原始本地日志和 Agent 凭证不上传；下列 JSON 是脱敏后的实际运行记录。
 
+本页下表是 2026-10-04 的初始验收。2026-10-05 的治理修复已完成 47/47 回归测试、
+Codex 边界/实际写入重测、真实动态 Loop 和独立 Pi 源码复审；详见 [最新治理修复验收](governance-repair.md)。
+
 | 验证 | 结果 | 证据 |
 | --- | --- | --- |
 | 原 loop 兼容与项目治理测试 | 36/36 PASS | `npm test`，包含真进程、Git worktree 和 HTTP 测试 |

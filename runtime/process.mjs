@@ -124,6 +124,7 @@ export class ProcessAdapter {
     const fail = error => {
       if (terminal) return;
       terminal = true; info.status = 'failed'; info.error = redact(error.message); reject(error);
+      if (/usage limit|quota.{0,30}(?:exceed|exhaust)|insufficient_quota/i.test(error.message)) this.availability = 'offline';
     };
     const complete = value => {
       if (terminal) return;

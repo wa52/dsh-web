@@ -4,9 +4,13 @@ const provider = process.env.DSH_PROTOCOL_FIXTURE;
 const args = process.argv.slice(2);
 const line = object => process.stdout.write(JSON.stringify(object) + '\n');
 if (provider === 'codex') {
+  if (process.env.DSH_PROTOCOL_QUOTA) {
+    line({ type: 'error', message: 'Usage limit exceeded' });
+  } else {
   const target = args[args.indexOf('-o') + 1];
-  writeFileSync(target, '{"summary":"protocol-ok"}');
+  writeFileSync(target, JSON.stringify({ summary: 'protocol-ok', args, codexEnvironmentKeys: Object.keys(process.env).filter(key => /^CODEX_/i.test(key)) }));
   line({ type: 'turn.completed' });
+  }
 } else if (provider === 'opencode') {
   const prompt = readFileSync(args[args.indexOf('--file') + 1], 'utf8');
   line({ type: 'text', part: { text: JSON.stringify({ summary: 'protocol-ok', prompt, args }) } });

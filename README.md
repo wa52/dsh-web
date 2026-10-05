@@ -47,6 +47,11 @@ Windows 建议配置原生 `.exe` 的绝对路径，或 `executable: "node"` 加
 - UI 显示目标、状态、Gap、决策、行动、Agent、测试与审核证据；支持启动、在行动边界暂停和取消。
 - 默认禁用 Worker shell、网络、commit 和额外 Agent 调度。Host 执行配置中的测试并创建候选 commit。
 - 高风险行动必须经过两个独立 Reviewer，其中一个具有 security 能力。
+- 默认普通决策由 DSH 执行；高风险或连续两次行动失败时优先交给 Codex，额度耗尽的 provider 会在当前运行时中隔离。
+  可以用 `decisionAgent` 显式指定偏好；省略或设为 `"auto"` 使用动态路由。
+- Host 根据实际路径与敏感变更提高风险，模型不能降低这一最低等级。
+- 没有源码变化的行动记为 `NO_CHANGE`，不创建 commit、不增加成功评分，也不推进 acceptedHead。
+- Gap 优先级为 0..100，数值越大越紧急。观察提供源码覆盖和截断清单；完整观察独立归档，World State 保存引用。
 - 审核失败后重新诊断，可以修复或放弃候选；连续失败影响 Worker 评分并触发替换。
 - 主 checkout 不自动合并。`acceptedHead` 指向已审核候选，人工可以检查后合并。
 - 崩溃状态不能直接续写；`recoverInterruptedProject(config)` 验证 PID 指纹并停止残留 Worker，再允许重新规划。
@@ -59,10 +64,11 @@ Windows 建议配置原生 `.exe` 的绝对路径，或 `executable: "node"` 加
 
 权限通过原生 Codex sandbox、OpenCode permission、Pi tool hook、DSH sandbox 和 tool guard 实现。
 2026-10-04 的真实电商压力验收发现：原生 Codex CLI 仍继承了 MCP JS 工具，
-并在 `shell: false` 时通过它启动了 `cmd.exe`。当前 Codex adapter 的 connector/plugin 禁用措施
-不足，不能把 shell/network/read-only 配置视为已完整隔离；Windows Job Object 也不能约束
-在外部 MCP 服务里启动的进程。在修复并验证这一边界前，应禁用原生 Codex 的执行角色
-（例如配置 `"roles": []`）；同一 adapter 的恢复入口也受此限制。本次实验已隔离该通道。
+并在 `shell: false` 时通过它启动了 `cmd.exe`。2026-10-05 修复后的 adapter 忽略用户配置，
+移除继承的桌面 session 环境变量，并显式禁用 MCP、插件、JS、浏览器和额外 Agent 工具。
+在 Windows / Codex CLI 0.155.1 上，原生模型请求的工具清单验证未暴露这些通道，
+实际 Codex 写入也通过 Host 测试与 DSH 独立审核。详见 [治理修复验收](docs/governance-repair.md)。
+Windows Job Object 仍不能约束外部 MCP 服务中的进程；工具清单验证不代表已证明所有平台和策略配置的隔离。
 这不是恶意第三方可执行文件的操作系统隔离平台；非 Codex provider 的 unrestricted shell 配置会被拒绝。
 测试命令和插件属于可信 Host 配置。源码注入内容没有调度权限。
 
@@ -88,6 +94,7 @@ OpenCode 的大段提示词使用 `run --file` 附件传输，避免 Windows 命
 
 最终完成标准以 [PROJECT_SPEC.md](PROJECT_SPEC.md) 为准。
 具体验收记录见 [validation](docs/validation.md)。
+最新运行时修复和真实重测见 [governance repair](docs/governance-repair.md)。
 真实项目试跑及已发现的限制见 [ecommerce stress pilot](docs/ecommerce-stress-pilot.md)。
 真实桌面/移动端购买流程验收见 [ecommerce browser acceptance](docs/ecommerce-browser-acceptance.md)。
 插件接入旧 Host 的示例见 [autonomous-control-loop](plugins/autonomous-control-loop/README.md)。

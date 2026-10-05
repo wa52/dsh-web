@@ -14,7 +14,7 @@ await mkdir(root, { recursive: true });
 const prior = process.argv[3] ? JSON.parse(await readFile(path.join(root, 'state/world.json'), 'utf8')) : null;
 const fixture = prior ? { repository: prior.project.repository, goal: prior.goal, successCriteria: prior.successCriteria } : await createCheckoutFixture(path.join(root, 'repo'));
 const config = { ...fixture, stateDir: path.join(root, 'state'), constraints: ['Never edit acceptance tests', 'Keep main untouched'], permissions: options.permissions ?? { shell: false, network: false },
-  protectedPaths: ['tests/acceptance.test.mjs'], tests: [{ executable: process.execPath, args: ['--test', 'tests/acceptance.test.mjs'] }], decisionAgent: options.decisionAgent ?? 'codex', maxActions: options.maxActions ?? 8, agentTimeoutMs: options.agentTimeoutMs ?? 180_000 };
+  protectedPaths: ['tests/acceptance.test.mjs'], tests: [{ executable: process.execPath, args: ['--test', 'tests/acceptance.test.mjs'] }], decisionAgent: options.decisionAgent ?? 'auto', maxActions: options.maxActions ?? 8, agentTimeoutMs: options.agentTimeoutMs ?? 180_000 };
 const agents = Object.entries(options.agents).map(([provider, settings]) => createAgentAdapter(provider, settings));
 const ctx = new Context(); const fiber = ctx.plugin(control);
 await new Promise(resolve => setImmediate(resolve));

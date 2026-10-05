@@ -10,7 +10,6 @@
   "maxActions": 10,
   "agentTimeoutMs": 300000,
   "testTimeoutMs": 60000,
-  "decisionAgent": "codex",
   "agents": {
     "codex": { "executable": "codex", "capabilities": ["code", "debug", "ui", "review", "security", "reason"] },
     "opencode": { "executable": "opencode", "capabilities": ["code", "debug", "ui", "review", "security", "reason"] },

@@ -1,7 +1,6 @@
 import { createRequire } from 'node:module';
 import { writeFile, readFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ProcessAdapter, parseObject } from './process.mjs';
@@ -23,16 +22,20 @@ async function cliSpec(provider, config, task) {
   const base = { executable: config.executable ?? provider, env: config.env ?? {} };
   if (provider === 'codex') {
     const output = path.join(task.artifactDir, `${task.runKey}-answer.json`);
-    const args = ['exec', '--ephemeral', '--ignore-rules', '--color', 'never', '--json', '-C', task.workspace, '-s', permission.write ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"', '-c', 'sandbox_workspace_write.network_access=false', '-c', 'features.apps=false', '-c', 'features.browser_use=false', '-c', 'features.computer_use=false', ...modelArgs, '-o', output, '-'];
-    // Native sandbox does not confine external MCP servers. Disable inherited
-    // user connectors/plugins rather than trusting a prompt to keep them read-only.
-    const userConfig = await readFile(path.join(config.env?.CODEX_HOME ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex'), 'config.toml'), 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
-    for (const match of userConfig.matchAll(/^\[(mcp_servers|plugins)\.([^\]]+)\]/gm)) {
-      if (match[2].endsWith('.env')) continue;
-      args.splice(args.length - 1, 0, '-c', `${match[1]}.${match[2]}.enabled=false`);
+    const args = ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--color', 'never', '--json', '-C', task.workspace, '-s', permission.write ? 'workspace-write' : 'read-only', '-c', 'approval_policy="never"', '-c', 'sandbox_workspace_write.network_access=false', '-c', 'mcp_servers={}', ...['apps', 'browser_use', 'computer_use', 'plugins', 'hooks', 'code_mode', 'code_mode_host', 'js_repl', 'multi_agent', 'skill_mcp_dependency_install', 'workspace_dependencies'].flatMap(feature => ['-c', `features.${feature}=false`]), ...modelArgs, '-o', output, '-'];
+    // Desktop pipe/session variables inject external tools independently of TOML.
+    // Null out inherited and explicitly configured values; retain only auth home.
+    const env = { ...base.env };
+    for (const key of new Set([...Object.keys(process.env), ...Object.keys(env)])) {
+      if (/^CODEX_/i.test(key) && key.toUpperCase() !== 'CODEX_HOME') env[key] = undefined;
     }
     if (!permission.shell) args.splice(args.length - 1, 0, '-c', 'features.shell_tool=false');
-    return { ...base, args, stdin: prompt, finish: async () => parseObject(await readFile(output, 'utf8')) };
+    if (!permission.network) args.splice(args.length - 1, 0, '-c', 'web_search="disabled"');
+    if (!permission.read) args.splice(args.length - 1, 0, '-c', 'features.view_image=false');
+    if (process.platform === 'win32') args.splice(args.length - 1, 0, '-c', 'windows.sandbox="elevated"');
+    return { ...base, env, args, stdin: prompt, strictFrames: true,
+      onFrame: frame => { if (frame.type === 'error' || frame.type === 'turn.failed') throw new Error(frame.message ?? frame.error?.message ?? 'Codex turn failed'); },
+      finish: async () => parseObject(await readFile(output, 'utf8')) };
   }
   if (provider === 'opencode') {
     const root = task.workspace.replaceAll('\\', '/');

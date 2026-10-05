@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-05",
+  "platform": "Windows",
+  "codexVersion": "0.155.1",
+  "passed": true,
+  "tools": [
+    "request_user_input",
+    "apply_patch",
+    "view_image"
+  ],
+  "forbidden": [],
+  "sandbox": "workspace-write",
+  "scope": "Real native model-request tool inventory, local mock inference endpoint; no real model claim"
+}

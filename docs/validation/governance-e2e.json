@@ -1,0 +1,49 @@
+{
+  "at": "2026-10-05T05:31:39.267Z",
+  "scenario": "Live models with a one-time delivery fault injected after Builder stop; no scripted decisions or review verdicts",
+  "status": "PASS",
+  "checks": {
+    "complete": true,
+    "twoProviders": true,
+    "mandatoryReview": true,
+    "rejectedThenReplanned": true,
+    "tracedCommits": true,
+    "mainUntouched": true,
+    "restartState": true
+  },
+  "actions": [
+    {
+      "id": "0606489e-a1af-4747-9cff-ffb01354494b",
+      "goal": "Fix `total` in checkout.mjs to compute line totals as price * quantity (defaulting quantity to 1 where absent) so `total([{price:10, quantity:3}]) === 30`, without editing any acceptance test.",
+      "phase": "FAILED",
+      "builder": "dsh",
+      "reviews": []
+    },
+    {
+      "id": "59545589-d944-48ca-ae07-78796f2426de",
+      "goal": "Repair `total` in checkout.mjs so each item contributes price * quantity, defaulting quantity to 1 when it is absent or not a number, so total([{price:10,quantity:3}]) === 30 and total([]) === 0; change no other file.",
+      "phase": "REJECTED",
+      "builder": "opencode",
+      "commit": "802908fa6ae1961fc7ef5d482c6ee91ed4d3e423",
+      "reviews": [
+        {
+          "reviewer": "pi",
+          "verdict": "reject"
+        }
+      ]
+    },
+    {
+      "id": "34781a47-3410-427d-9fad-4fbb8f2ad5a4",
+      "goal": "Update checkout.mjs so delivery(items) bases the free-delivery threshold on the same quantity-aware subtotal used by total(items), returning 0 when subtotal is at least 30 and 5 otherwise, without editing acceptance tests.",
+      "phase": "MERGE_READY",
+      "builder": "pi",
+      "commit": "1a7700ca4592d22b5160983000d1d8663c20cb93",
+      "reviews": [
+        {
+          "reviewer": "dsh",
+          "verdict": "pass"
+        }
+      ]
+    }
+  ]
+}

@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 import { recoverInterruptedProject } from '../runtime/recovery.mjs';
 import { WorldStore } from '../runtime/store.mjs';
 import { randomUUID } from 'node:crypto';
+import { changedPathRisk, sourceObservation } from '../runtime/governance.mjs';
+import { validateAssessment, ModelDecision } from '../runtime/decision.mjs';
 
 test('provider envelopes accept one JSON block and reject ambiguous reports', () => {
   assert.deepEqual(parseObject('Review evidence\n```json\n{"verdict":"reject"}\n```'), { verdict: 'reject' });
@@ -38,6 +40,134 @@ function controlledAdapter(id, build, review) {
       return { id: `test-${Date.now()}`, result: Promise.resolve().then(() => task.role === 'build' ? build(task) : review(task)), dispose: async () => {} };
     } };
 }
+
+async function recordedChange(task) {
+  await writeFile(path.join(task.workspace, 'builder-note.md'), 'Candidate change; acceptance defects intentionally remain.\n');
+  return { summary: 'Builder claims completion' };
+}
+
+test('Codex child does not inherit desktop connectors or session execution features', async t => {
+  const { root, config } = await setup(t);
+  const adapter = createAgentAdapter('codex', { executable: process.execPath, argsPrefix: [fileURLToPath(new URL('./fixtures/agent-cli.mjs', import.meta.url))], env: { DSH_PROTOCOL_FIXTURE: 'codex', CODEX_APP_TOOLS_PIPE_PATH: 'poisoned-desktop-pipe', CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'desktop' } });
+  const handle = await adapter.start({ role: 'review', workspace: config.repository, artifactDir: root, runKey: randomUUID(), permissions: { write: false }, prompt: 'Boundary probe', timeoutMs: 10000 });
+  try {
+    const result = await handle.result;
+    assert.ok(result.args.includes('--ignore-user-config'));
+    assert.ok(result.args.includes('mcp_servers={}'));
+    for (const feature of ['plugins', 'hooks', 'code_mode', 'code_mode_host', 'multi_agent', 'shell_tool']) assert.ok(result.args.includes(`features.${feature}=false`));
+    assert.ok(result.args.includes('web_search="disabled"'));
+    assert.ok(result.codexEnvironmentKeys.every(key => key === 'CODEX_HOME'));
+  } finally { await handle.dispose(); }
+});
+
+test('priority range and host-governance candidates are rejected at the assessment boundary', () => {
+  const value = { complete: false, reason: 'evidence', gaps: [{ id: 'gap', description: 'problem', priority: 100, evidence: ['test'] }], candidates: [{ kind: 'write', gapId: 'gap', goal: 'repair', capabilities: ['code'], risk: 'normal', strategy: 'repair' }] };
+  assert.equal(validateAssessment(value).gaps[0].priority, 100);
+  assert.throws(() => validateAssessment({ ...value, gaps: [{ ...value.gaps[0], priority: 101 }] }), /priority/);
+  assert.throws(() => validateAssessment({ ...value, candidates: [{ ...value.candidates[0], kind: 'host_governance' }] }), /governance/);
+  assert.throws(() => validateAssessment({ ...value, candidates: [{ ...value.candidates[0], capabilities: ['code/debug'] }] }), /capabilities/);
+});
+
+test('native Codex quota errors terminate promptly and remove the provider from selection', async t => {
+  const { root, config } = await setup(t);
+  const adapter = createAgentAdapter('codex', { executable: process.execPath, argsPrefix: [fileURLToPath(new URL('./fixtures/agent-cli.mjs', import.meta.url))], env: { DSH_PROTOCOL_FIXTURE: 'codex', DSH_PROTOCOL_QUOTA: '1' } });
+  const handle = await adapter.start({ role: 'build', workspace: config.repository, artifactDir: root, runKey: randomUUID(), permissions: { shell: false }, prompt: 'test', timeoutMs: 10000 });
+  try { await assert.rejects(handle.result, /Usage limit/); } finally { await handle.dispose(); }
+  assert.equal(adapter.availability, 'offline');
+  const registry = new AgentRegistry(); registry.add(adapter);
+  registry.add(controlledAdapter('dsh', () => {}, () => {}));
+  assert.equal(registry.select({ role: 'build', capabilities: ['code'] }).id, 'dsh');
+});
+
+test('decision retries through another available reasoner when its provider exhausts quota', async () => {
+  const registry = new AgentRegistry();
+  for (const id of ['dsh', 'codex']) registry.add({ ...controlledAdapter(id, () => {}, () => {}), roles: ['decide'] });
+  const attempted = [];
+  const router = new ModelDecision(async agent => {
+    attempted.push(agent.id);
+    if (agent.id === 'dsh') { agent.availability = 'offline'; throw new Error('Usage limit exceeded'); }
+    return { complete: true, reason: 'accepted evidence', gaps: [], candidates: [] };
+  }, registry);
+  const report = await router.assess({ goal: 'test', successCriteria: [], constraints: [], failures: [], actions: [], agentPerformance: {} }, {}, '.');
+  assert.deepEqual(attempted, ['dsh', 'codex']);
+  assert.equal(report.decidedBy, 'codex');
+});
+
+test('unaccepted green-test candidates cannot be declared complete by the decision model', async () => {
+  const registry = new AgentRegistry();
+  registry.add({ ...controlledAdapter('dsh', () => {}, () => {}), roles: ['decide'] });
+  let attempts = 0;
+  const router = new ModelDecision(async () => ++attempts === 1
+    ? { complete: true, reason: 'tests green', gaps: [], candidates: [] }
+    : { complete: false, reason: 'unresolved independent review', gaps: [{ id: 'review-finding', description: 'repair finding', priority: 100, evidence: ['review'] }], candidates: [{ kind: 'write', gapId: 'review-finding', goal: 'repair review finding', capabilities: ['code'], risk: 'normal', strategy: 'repair' }] }, registry);
+  const report = await router.assess({ goal: 'test', successCriteria: [], constraints: [], failures: [], actions: [], agentPerformance: {} }, { head: 'candidate', acceptedHead: 'accepted', tests: [{ passed: true }] }, '.');
+  assert.equal(attempts, 2);
+  assert.equal(report.complete, false);
+});
+
+test('a no-op cannot create a commit, count success or pass a pending rejected candidate', async t => {
+  const { config } = await setup(t);
+  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, async () => ({}), async () => { throw new Error('No-op must not reach review'); }));
+  const runtime = new ProjectRuntime(config, { agents, assessment: assess });
+  const baseline = (await runtime.initialize()).acceptedHead;
+  const state = await runtime.start({ maxActions: 1 });
+  assert.equal(state.actions[0].phase, 'NO_CHANGE');
+  assert.equal(state.actions[0].commit, undefined);
+  assert.equal(state.commits.length, 0);
+  assert.equal(state.acceptedHead, baseline);
+  assert.equal(state.agentPerformance['code-worker'].successes, 0);
+});
+
+test('source budget covers backend and frontend, exposes omissions and respects UTF-8 bytes', async t => {
+  const { root } = await setup(t);
+  await mkdir(path.join(root, 'backend/auth'), { recursive: true });
+  await mkdir(path.join(root, 'frontend'), { recursive: true });
+  const paths = ['backend/auth/login.ts', 'backend/main.py', 'frontend/page.tsx'];
+  for (const file of paths) await writeFile(path.join(root, file), '中文source\n'.repeat(1000));
+  const report = await sourceObservation(root, paths.map(name => ({ name, type: 'file' })), 1000);
+  assert.ok(report.sources['backend/auth/login.ts']);
+  assert.ok(report.sources['frontend/page.tsx']);
+  assert.ok(report.sourceCoverage.usedBytes <= 1000);
+  assert.equal(report.sourceCoverage.complete, false);
+  assert.ok(report.sourceCoverage.included.every(file => file.truncated));
+  assert.equal(changedPathRisk(['backend/auth/login.ts']).risk, 'high');
+  assert.equal(changedPathRisk(['frontend/page.tsx']).risk, 'normal');
+});
+
+test('actual sensitive paths force two independent reviewers despite normal model risk', async t => {
+  const { config } = await setup(t);
+  const build = async task => {
+    const file = path.join(task.workspace, 'checkout.mjs');
+    await writeFile(file, (await readFile(file, 'utf8')).replaceAll('sum + item.price, 0', 'sum + item.price * item.quantity, 0'));
+    await writeFile(path.join(task.workspace, 'style.css'), '.checkout { display: block; }');
+    await mkdir(path.join(task.workspace, 'auth'));
+    await writeFile(path.join(task.workspace, 'auth/login.mjs'), 'export const validate = value => Boolean(value);');
+    return {};
+  };
+  const agents = ['code-worker', 'ui-worker', 'security-worker'].map(id => controlledAdapter(id, build, async () => ({ verdict: 'pass', reason: 'host evidence', evidence: ['auth/login.mjs'], blockingRisks: [] })));
+  agents[1].capabilities = ['code', 'review', 'reason'];
+  const runtime = new ProjectRuntime(config, { agents, assessment: assess });
+  const state = await runtime.start({ maxActions: 1 });
+  const action = state.actions[0];
+  assert.equal(action.risk, 'high');
+  assert.equal(action.phase, 'MERGE_READY');
+  assert.equal(new Set(action.reviews.map(review => review.reviewer)).size, 2);
+  assert.deepEqual(action.riskEvidence.sensitivePaths, ['auth/login.mjs']);
+});
+
+test('decision routing starts with DSH, escalates consecutive failures and honors quarantine', async () => {
+  const registry = new AgentRegistry();
+  for (const id of ['dsh', 'codex', 'pi']) registry.add({ ...controlledAdapter(id, () => {}, () => {}), roles: ['decide'] });
+  const chosen = [];
+  const router = new ModelDecision(async agent => { chosen.push(agent.id); return { complete: true, reason: 'accepted evidence', gaps: [], candidates: [] }; }, registry);
+  const state = { goal: 'test', successCriteria: [], constraints: [], failures: [], actions: [], agentPerformance: {} };
+  await router.assess(state, {}, '.');
+  state.actions = [{ phase: 'REJECTED' }, { phase: 'NO_CHANGE' }];
+  await router.assess(state, {}, '.');
+  registry.get('codex').roles = [];
+  await router.assess(state, {}, '.');
+  assert.deepEqual(chosen, ['dsh', 'codex', 'dsh']);
+});
 
 async function assess(state, observation, directory) {
   const source = await readFile(path.join(directory, 'checkout.mjs'), 'utf8');
@@ -79,6 +209,8 @@ test('V1 governed fixture: regression rejection, dynamic replan, independent tre
   assert.ok(state.actions.every(a => a.commit && a.tests.length && a.reviews.length && a.decisionId && a.rationale));
   assert.equal(new Set([...builds, ...reviews]).size, builds.length + reviews.length);
   assert.equal(state.decisions.length, 4);
+  assert.match(state.actions[1].diff, /^\+export const total/m);
+  assert.doesNotMatch(state.actions[1].actionDiff, /^\+export const total/m);
   const main = execFileSync('git', ['-C', config.repository, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   assert.notEqual(main, state.acceptedHead);
   assert.match(await readFile(path.join(config.repository, 'style.css'), 'utf8'), /display: none/);
@@ -118,7 +250,7 @@ test('real process adapter captures output, error, status and cancellation', asy
 
 test('host tests fail even if Builder and Reviewer both claim pass', async t => {
   const { config } = await setup(t);
-  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, async () => ({ summary: 'all tests pass' }), async () => ({ verdict: 'pass', reason: 'claimed', evidence: ['claim'], blockingRisks: [] })));
+  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, recordedChange, async () => ({ verdict: 'pass', reason: 'claimed', evidence: ['claim'], blockingRisks: [] })));
   const runtime = new ProjectRuntime(config, { agents, assessment: assess });
   const state = await runtime.start({ maxActions: 1 });
   assert.equal(state.actions[0].phase, 'REJECTED');
@@ -220,7 +352,7 @@ test('explicit recovery preserves an interrupted action for replanning', async t
 test('missing review fields cannot pass and retry budget halts the gate', async t => {
   const { config } = await setup(t);
   config.maxReviewAttempts = 1;
-  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, async () => ({}), async () => ({ verdict: 'pass', reason: 'claim', evidence: ['claim'] })));
+  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, recordedChange, async () => ({ verdict: 'pass', reason: 'claim', evidence: ['claim'] })));
   const runtime = new ProjectRuntime(config, { agents, assessment: assess });
   await assert.rejects(runtime.start({ maxActions: 1 }), /Invalid independent review/);
   assert.equal(runtime.state.actions[0].phase, 'HALTED');
@@ -229,7 +361,7 @@ test('missing review fields cannot pass and retry budget halts the gate', async 
 
 test('an alias of the Builder identity cannot review its changes', async t => {
   const { config } = await setup(t);
-  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, async () => ({}), async () => ({ verdict: 'pass', reason: 'claim', evidence: ['claim'], blockingRisks: [] })));
+  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, recordedChange, async () => ({ verdict: 'pass', reason: 'claim', evidence: ['claim'], blockingRisks: [] })));
   agents.forEach(agent => { agent.identity = 'shared-session'; });
   const runtime = new ProjectRuntime(config, { agents, assessment: assess });
   await assert.rejects(runtime.start({ maxActions: 1 }), /retry budget exhausted/);
@@ -250,7 +382,7 @@ test('recovery lock excludes a new controller and persisted host policy is immut
 test('transient reviewer failure retries independently without another Builder', async t => {
   const { config } = await setup(t);
   let builds = 0, reviews = 0;
-  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, async () => { builds++; return {}; }, async () => {
+  const agents = ['code-worker', 'ui-worker'].map(id => controlledAdapter(id, async task => { builds++; return recordedChange(task); }, async () => {
     if (++reviews === 1) throw new Error('transient reviewer failure');
     return { verdict: 'reject', reason: 'actual tests fail', evidence: ['host tests'], blockingRisks: ['defects'] };
   }));
