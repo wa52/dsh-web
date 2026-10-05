@@ -57,5 +57,20 @@
   "quotaHandoff": {
     "testDouble": true,
     "scope": "Partial files preserved; stop confirmed before takeover; all contributors excluded from reviews. No claim of native quota rollover in this pilot."
-  }
+  },
+  "sourceHashesDescription": "SHA-256 of the exact reviewed Windows working-copy bytes. Git normalizes CRLF for some files.",
+  "gitSourceHashes": {
+    "runtime/commercial.mjs": "a7d5bcf56a3e68f1f97f1211df99ea3d3df0658018623f2effd1dac5a9f36019",
+    "runtime/research.mjs": "731c8eda2df155d45ec7988f826a8d33d543f90bd84d42a533ae91d8105f24a0",
+    "runtime/project.mjs": "1ddc740b27eaa72015201e94f34a888c2a2b4d6a8e3d928140c6001075f46168",
+    "runtime/decision.mjs": "1fc9dfce6ab5b380ca7e5267bfc451f8a2c550fccd1b520ab1da017bb311ef89",
+    "runtime/adapters.mjs": "146f092e1eb80e946ba854b28c3d33f31d187c85ed913850bb03017517bba24b",
+    "runtime/process.mjs": "5db5f01283d39631a9b71d685314d577ff5f472c8ccca60031bb7c359ba8af00",
+    "runtime/permissions.mjs": "d511156a9b4cbf117002461b98a31f0db1cc268a6dba69edc6bb3a692d219a67",
+    "runtime/registry.mjs": "32a21bd6848c06e7369cb4884ba69d5dce63723549f7c8cd5cbbc2fb624d1cfb",
+    "runtime/worktrees.mjs": "6e8bf2ca04430a6db130b789eb5a0d21d7cc43cbfebdb615391dc14aded42ac9",
+    "web/app.js": "8adb3667e491e997b712e7f385ac2b30b8511d0d6db47d44918e4a41b5bf64c9",
+    "tests/commercial-loop.test.mjs": "60900597d5cb49c85a649ac3abe6411a8c22e0dbbe4e149c02fcd46f7489b5b2"
+  },
+  "reviewedImplementationCommit": "5b6d72238d1583e5e579a7dd26ae93c4718e53a2"
 }
