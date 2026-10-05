@@ -33,7 +33,11 @@ export function assembleNewProjectReport({
   const reviews = candidate?.reviews ?? [];
 
   const checks = {
-    hostPrecheckFailsOnBrief: precheck.status !== 0 && !precheck.error,
+    // A clean assertion failure exits with a numeric, signal-free non-zero status
+    // and no spawn error. A signal-terminated child reports status null, which the
+    // old `status !== 0` expression accepted; that proved only that the precheck
+    // crashed, not that the external acceptance fails on the bare brief.
+    hostPrecheckFailsOnBrief: Number.isInteger(precheck.status) && precheck.status !== 0 && !precheck.signal && !precheck.error,
     mergeReadyCandidate: mergeReady.length >= 1,
     builderTestsPassed: tests.length === testCount && tests.every(test => test.passed),
     committedTestsPassed: committedTests.length === testCount && committedTests.every(test => test.passed),

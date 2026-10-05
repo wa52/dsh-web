@@ -98,3 +98,33 @@ test('a missing state assembles a FAIL report without throwing', () => {
   assert.equal(report.stateStatus, 'not-initialized');
   assert.deepEqual(report.actions, []);
 });
+
+test('a signal-terminated precheck with null status cannot satisfy the gate', () => {
+  // spawnSync reports status null and a non-null signal for a killed child. The
+  // previous `status !== 0` expression treated null as a clean failure and let the
+  // verdict proceed toward a false PASS despite a crashed precheck.
+  const { status, checks, report } = assemble(passingState(), { precheck: { status: null, signal: 'SIGTERM', error: null } });
+  assert.equal(checks.hostPrecheckFailsOnBrief, false);
+  assert.equal(status, 'FAIL');
+  assert.equal(report.hostPrecheck.signal, 'SIGTERM');
+  assert.equal(report.hostPrecheck.status, null);
+});
+
+test('an undefined precheck status cannot satisfy the gate', () => {
+  const { status, checks } = assemble(passingState(), { precheck: { status: undefined, signal: null, error: null } });
+  assert.equal(checks.hostPrecheckFailsOnBrief, false);
+  assert.equal(status, 'FAIL');
+});
+
+test('a precheck spawn error cannot satisfy the gate', () => {
+  const { status, checks, report } = assemble(passingState(), { precheck: { status: null, signal: null, error: 'spawn failed' } });
+  assert.equal(checks.hostPrecheckFailsOnBrief, false);
+  assert.equal(status, 'FAIL');
+  assert.equal(report.hostPrecheck.error, 'spawn failed');
+});
+
+test('a pre-passing precheck (clean exit zero) cannot satisfy the gate', () => {
+  const { status, checks } = assemble(passingState(), { precheck: { status: 0, signal: null, error: null } });
+  assert.equal(checks.hostPrecheckFailsOnBrief, false);
+  assert.equal(status, 'FAIL');
+});
