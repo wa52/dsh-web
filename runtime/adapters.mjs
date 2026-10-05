@@ -43,7 +43,10 @@ async function cliSpec(provider, config, task) {
   if (permission.shell && provider !== 'codex') throw new Error(`${provider}: unrestricted shell requires an external confinement adapter; refusing escalation`);
   await mkdir(task.artifactDir, { recursive: true });
   const prompt = promptFor(task);
-  const modelArgs = config.model ? ['--model', config.model] : [];
+  // Per-call Host routing wins; the static config.model stays the fallback when
+  // routing is disabled, preserving the previous default behavior.
+  const model = task.model ?? config.model;
+  const modelArgs = model ? ['--model', model] : [];
   const base = { executable: config.executable ?? provider, env: config.env ?? {} };
   if (provider === 'codex') {
     const output = path.join(task.artifactDir, `${task.runKey}-answer.json`);
@@ -108,7 +111,7 @@ async function cliSpec(provider, config, task) {
     const bin = path.join(path.dirname(require.resolve('@deepseek-ai/dsh/package.json')), 'lib/bin.js');
     return { executable: config.executable ?? process.execPath, env: base.env,
       args: [...(config.executable ? [] : [bin]), '--profile', 'sdk', '--patch', patch],
-      begin: ({ send }) => send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { cwd: task.workspace, provider: config.provider ?? 'deepseek-official', model: config.model ?? 'deepseek-v4-flash' } }),
+      begin: ({ send }) => send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { cwd: task.workspace, provider: config.provider ?? 'deepseek-official', model: task.model ?? config.model ?? 'deepseek-v4-flash' } }),
       send: (message, { send }) => send({ jsonrpc: '2.0', id: 3, method: 'session/prompt', params: { sessionId: task.runKey, contentBlocks: [{ type: 'text', text: message }] } }),
       onFrame: (frame, { send, complete, fail }) => {
         if (frame.error) { fail(new Error(frame.error.message)); return; }
@@ -128,7 +131,7 @@ async function cliSpec(provider, config, task) {
 }
 
 export function createAgentAdapter(provider, config = {}) {
-  const adapter = new ProcessAdapter({ id: config.id ?? provider, identity: config.identity ?? randomUUID(), provider, roles: config.roles ?? ['build', 'review', 'decide', 'recovery'], capabilities: config.capabilities ?? ['code', 'debug', 'ui', 'review', 'reason'], trust: config.trust ?? (provider === 'codex' ? 0.95 : 0.75), cost: config.cost ?? 1, permissions: config.permissions }, async task => {
+  const adapter = new ProcessAdapter({ id: config.id ?? provider, identity: config.identity ?? randomUUID(), provider, roles: config.roles ?? ['build', 'review', 'decide', 'recovery'], capabilities: config.capabilities ?? ['code', 'debug', 'ui', 'review', 'reason'], trust: config.trust ?? (provider === 'codex' ? 0.95 : 0.75), cost: config.cost ?? 1, permissions: config.permissions, model: config.model, quotaGroup: config.quotaGroup }, async task => {
     const spec = await cliSpec(provider, config, task);
     spec.args = [...(config.argsPrefix ?? []), ...spec.args];
     return spec;

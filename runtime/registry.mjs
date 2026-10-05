@@ -1,3 +1,5 @@
+import { unavailableAgentIds } from './routing.mjs';
+
 export class AgentRegistry {
   constructor() { this.agents = new Map(); }
   add(adapter) {
@@ -5,8 +7,12 @@ export class AgentRegistry {
     this.agents.set(adapter.id, adapter); return adapter;
   }
   get(id) { const agent = this.agents.get(id); if (!agent) throw new Error(`Unknown agent ${id}`); return agent; }
+  /** Effective unavailability: own offline state plus every offline quotaGroup member. */
+  unavailable() { return unavailableAgentIds([...this.agents.values()]); }
+  isUnavailable(id) { return this.unavailable().has(id); }
   select({ role, capabilities = [], risk = 'normal', exclude = [], preferred }, performance = {}) {
-    const candidates = [...this.agents.values()].filter(agent => agent.roles.includes(role) && agent.availability !== 'offline' && !exclude.includes(agent.id) && capabilities.every(c => agent.capabilities.includes(c)));
+    const unavailable = this.unavailable();
+    const candidates = [...this.agents.values()].filter(agent => !unavailable.has(agent.id) && agent.roles.includes(role) && !exclude.includes(agent.id) && capabilities.every(c => agent.capabilities.includes(c)));
     const scored = candidates.map(agent => {
       const history = performance[agent.id] ?? { successes: 0, failures: 0 };
       const rate = (history.successes + 1) / (history.successes + history.failures + 2);

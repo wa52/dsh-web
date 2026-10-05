@@ -57,6 +57,9 @@ Windows 建议配置原生 `.exe` 的绝对路径，或 `executable: "node"` 加
 - 高风险行动必须经过两个独立 Reviewer，其中一个具有 security 能力。
 - 默认普通决策由 DSH 执行；高风险或连续两次行动失败时优先交给 Codex，额度耗尽的 provider 会在当前运行时中隔离。
   可以用 `decisionAgent` 显式指定偏好；省略或设为 `"auto"` 使用动态路由。
+- 可选 `models` 登记表启用按行动的自动模型路由：普通行动用 routine 层，高风险或连续失败上移到 deep，security 审核用 security 层；
+  `prohibited: true` 的模型（例如 V4 Pro）永不选用，无可用模型时失败关闭。`quotaGroup` 把 Codex-backed Pi 与 Codex 计为同一额度组。
+  选择结果、原因与输入作为证据随 `view()` 暴露。配置、默认值与限制见[共同商业 Loop 使用说明](docs/commercial-loop-runtime.md)。
 - Host 根据实际路径与敏感变更提高风险，模型不能降低这一最低等级。
 - 没有源码变化的行动记为 `NO_CHANGE`，不创建 commit、不增加成功评分，也不推进 acceptedHead。
 - Gap 优先级为 0..100，数值越大越紧急。观察提供源码覆盖和截断清单；完整观察独立归档，World State 保存引用。

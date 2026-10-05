@@ -30,15 +30,20 @@ export class ModelDecision {
     const preference = typeof this.preferred === 'function' ? this.preferred() : this.preferred;
     const preferred = preference && preference !== 'auto' ? preference : (escalate ? 'codex' : 'dsh');
     const primary = this.registry.agents.get(preferred);
-    const viable = primary?.roles.includes('decide') && primary.capabilities.includes('reason') && primary.availability !== 'offline' && (typeof this.preferred === 'function' || (state.agentPerformance[preferred]?.consecutiveFailures ?? 0) < 2);
+    const unavailable = this.registry.unavailable();
+    const viable = primary?.roles.includes('decide') && primary.capabilities.includes('reason') && !unavailable.has(preferred) && (typeof this.preferred === 'function' || (state.agentPerformance[preferred]?.consecutiveFailures ?? 0) < 2);
     let agent = viable ? primary : this.registry.select({ role: 'decide', capabilities: ['reason'], risk: escalate ? 'high' : 'normal' }, state.agentPerformance);
     const capabilities = new Set([...this.registry.agents.values()].flatMap(agent => agent.capabilities));
     let report;
+    let routing;
     let formatError = '';
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         report = await this.execute(agent, {
       role: 'decide', workspace, outputSchema: ASSESSMENT_SHAPE,
+      // Host-computed routing inputs; a decide Worker can never escalate its own tier.
+      risk: escalate ? 'high' : 'normal', escalate,
+      onRouting: selection => { routing = selection; },
       prompt: `Re-evaluate the ENTIRE project now. The primary use case is developing NEW products from a brief and an initial repository; improving existing products is also supported. Missing product capabilities, core journeys, UI/UX and delivery conditions are gaps even when there is no existing bug or source to repair. Choose the most valuable bounded construction or improvement action for the current state, without a fixed scaffold/frontend/backend sequence. No existing code, no failing tests or an empty TODO list does not prove the requested product exists. Ignore old TODO ordering. Diagnose gaps from current evidence and propose independent candidate actions. Priority is 0..100, with 100 most urgent; larger values first. Propose product changes only: review, commit, deploy and scheduling are Controller duties, not Builder actions. Source coverage explicitly reports missing or truncated files; do not infer absent code from missing excerpts. New regressions outrank cosmetic work. Never claim success just because a Builder did. Do not invent additional success criteria or require unrelated features. Passing ALL supplied criteria with accepted review evidence means complete.\nGoal: ${state.goal}\nCriteria: ${JSON.stringify(state.successCriteria)}\nConstraints: ${JSON.stringify(state.constraints)}\nObservation: ${JSON.stringify(observation)}\nPrevious failures/reviews: ${JSON.stringify(state.failures.slice(-8))}\nActions: ${JSON.stringify(state.actions.slice(-5).map(a => ({ goal: a.goal, phase: a.phase, reviews: a.reviews })))}\nProvide evidence for every gap. For rejected work, diagnose the findings and reconsider the route rather than resuming a stale task.\n${formatError}`,
     });
         if (typeof this.preferred === 'function' && report.worker && this.registry.agents.has(report.worker)) agent = this.registry.get(report.worker);
@@ -46,7 +51,7 @@ export class ModelDecision {
         if (report.complete && observation.head !== observation.acceptedHead) throw new Error('Invalid assessment: candidate is not independently accepted; completion is forbidden while review is rejected or pending');
         break;
       } catch (error) {
-        if (!attempt && agent.availability === 'offline') {
+        if (!attempt && this.registry.isUnavailable(agent.id)) {
           agent = this.registry.select({ role: 'decide', capabilities: ['reason'], exclude: [agent.id] }, state.agentPerformance);
           continue;
         }
@@ -54,6 +59,6 @@ export class ModelDecision {
         formatError = `The previous response did not satisfy the JSON contract: ${error.message}. Return one JSON object only, with actual values instead of schema descriptions. No markdown or prose outside JSON.`;
       }
     }
-    return { ...validateAssessment(report, capabilities), decidedBy: agent.id, decisionRunId: report.runId };
+    return { ...validateAssessment(report, capabilities), decidedBy: agent.id, decisionRunId: report.runId, ...(routing ? { routing } : {}) };
   }
 }

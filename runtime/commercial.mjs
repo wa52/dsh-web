@@ -126,7 +126,7 @@ export class CommercialLoop {
     let audit;
     try { audit = await r.execute(reviewer, task); }
     catch (error) {
-      if (reviewer.availability !== 'offline' || String(error.message).includes('STOP_UNCONFIRMED')) throw error;
+      if (!r.registry.isUnavailable(reviewer.id) || String(error.message).includes('STOP_UNCONFIRMED')) throw error;
       reviewer = r.registry.select({ role: 'review', capabilities: ['review'], exclude: [...excluded, reviewer.id] }, r.state.agentPerformance);
       audit = await r.execute(reviewer, task);
     }

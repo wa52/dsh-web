@@ -10,6 +10,7 @@ import { policyFor } from './permissions.mjs';
 import { runCommand, redact } from './process.mjs';
 import { changedPathRisk, sourceObservation, testSummary } from './governance.mjs';
 import { CommercialLoop } from './commercial.mjs';
+import { normalizeModelRegistry, routeModel, RoutingError } from './routing.mjs';
 
 const safeError = error => redact(error instanceof Error ? error.message : String(error));
 
@@ -25,6 +26,7 @@ export class ProjectRuntime extends EventEmitter {
     this.worktrees = new WorktreeManager(this.repository, path.join(this.store.directory, 'worktrees'), this.id);
     this.registry = new AgentRegistry();
     agents.forEach(agent => this.registry.add(agent));
+    this.assertModelRegistry();
     this.assessment = assessment;
     this.observeExtra = observe;
     this.afterBuild = afterBuild;
@@ -88,10 +90,60 @@ export class ProjectRuntime extends EventEmitter {
     return { world: clone(this.state), agents, running: this.running };
   }
 
+  /** Host model registry as a non-empty array, or null when none is configured. */
+  modelCatalog() {
+    const registry = this.config.models;
+    const models = Array.isArray(registry) ? registry : registry?.models;
+    return Array.isArray(models) && models.length ? models : null;
+  }
+
+  /** Validate the Host model registry once; enforce the static-model rule when routing is disabled. */
+  assertModelRegistry() {
+    const catalog = this.modelCatalog();
+    if (!catalog) return;
+    normalizeModelRegistry(catalog);
+    if (this.config.autoModelRouting === false) {
+      for (const agent of this.registry.agents.values()) {
+        if (!agent.model) continue;
+        const entry = catalog.find(model => model?.id === agent.model);
+        if (!entry || entry.prohibited === true || entry.eligible === false) throw new RoutingError(`Static model ${agent.model} is not an eligible entry in the Host model registry`, 'INELIGIBLE_STATIC_MODEL');
+      }
+    }
+  }
+
+  /** Host-computed providers currently quarantined, including shared quotaGroup members. */
+  unavailableProviders() {
+    const unavailable = this.registry.unavailable();
+    const providers = new Set();
+    for (const agent of this.registry.agents.values()) if (unavailable.has(agent.id) && agent.provider) providers.add(agent.provider);
+    return [...providers];
+  }
+
+  /**
+   * Select a model for the already-chosen Worker. Returns inspectable routing
+   * evidence, or undefined when no Host catalog is configured (static fallback).
+   * Throws RoutingError (fail closed); it never mutates Worker availability.
+   */
+  routeFor(agent, task) {
+    const catalog = this.modelCatalog();
+    if (!catalog || this.config.autoModelRouting === false) return undefined;
+    const selection = routeModel({
+      provider: agent.provider,
+      role: task.role,
+      capabilities: task.capabilities,
+      security: task.security,
+      risk: task.risk,
+      escalate: task.escalate,
+      unavailable: this.unavailableProviders(),
+    }, catalog);
+    return { selectedModel: selection.selectedModel, provider: selection.provider, reason: selection.reason, inputs: selection.inputs, at: new Date().toISOString() };
+  }
+
   sharedWorker(role, capabilities = [], exclude = []) {
     const id = this.state.sharedWorker ?? this.config.commercialLoop?.worker;
     const current = this.registry.agents.get(id);
-    if (current && current.availability !== 'offline' && current.roles.includes(role) && capabilities.every(c => current.capabilities.includes(c)) && !exclude.includes(current.id)) return current;
+    const unavailable = this.registry.unavailable();
+    if (current && !unavailable.has(current.id) && current.roles.includes(role) && capabilities.every(c => current.capabilities.includes(c)) && !exclude.includes(current.id)) return current;
     const next = this.registry.select({ role, capabilities, exclude }, this.state.agentPerformance);
     this.state.sharedWorker = next.id;
     return next;
@@ -157,15 +209,20 @@ export class ProjectRuntime extends EventEmitter {
     const runKey = randomUUID();
     const artifactDir = path.join(this.store.directory, 'evidence', task.actionId ?? runKey);
     await mkdir(artifactDir, { recursive: true });
+    // Recompute routing for whichever Worker is about to run, including any
+    // handoff successor. A fail-closed RoutingError propagates as an ordinary
+    // FAILED action and never marks the provider offline.
+    const routing = this.routeFor(agent, task);
+    if (routing) task.onRouting?.(routing);
     const abort = new AbortController();
     this.controller = abort;
     const started = Date.now();
-    const launchIntent = { id: runKey, launchToken: runKey, worker: agent.id, role: task.role, actionId: task.actionId, workspace: task.workspace, status: 'preparing', startedAt: new Date().toISOString() };
+    const launchIntent = { id: runKey, launchToken: runKey, worker: agent.id, role: task.role, actionId: task.actionId, workspace: task.workspace, status: 'preparing', startedAt: new Date().toISOString(), ...(routing ? { routing } : {}) };
     this.state.runs.push(launchIntent);
     await this.checkpoint(); // Durable before any Worker is spawned.
     let run;
     try {
-      run = await agent.start({ ...task, runKey, artifactDir, permissions: policyFor(task.role, this.state.permissions), timeoutMs: this.config.agentTimeoutMs ?? 300_000, signal: abort.signal, onEvent: event => {
+      run = await agent.start({ ...task, model: routing?.selectedModel, runKey, artifactDir, permissions: policyFor(task.role, this.state.permissions), timeoutMs: this.config.agentTimeoutMs ?? 300_000, signal: abort.signal, onEvent: event => {
         if (event.type === 'run-started') Object.assign(launchIntent, event, { role: task.role, actionId: task.actionId });
         this.emit('run', event);
       } });
@@ -275,7 +332,12 @@ export class ProjectRuntime extends EventEmitter {
       const activeBuilder = this.commercial ? this.sharedWorker('build', candidate.capabilities) : builder;
       action.builder = activeBuilder.id; action.builderIdentity = activeBuilder.identity ?? activeBuilder.id;
       const execute = this.commercial ? this.executeWithHandoff.bind(this) : this.execute.bind(this);
-      action.builderResult = await execute(activeBuilder, { role: 'build', actionId: id, capabilities: candidate.capabilities, workspace: tree.directory, outputFormat: this.commercial ? 'text' : undefined, prompt: `Goal: ${action.goal}\nProject goal: ${this.state.goal}\nCriteria: ${JSON.stringify(this.state.successCriteria)}\nDiagnosis: ${JSON.stringify(this.state.gaps)}\nAlignment feedback: ${this.lastAlignment?.text ?? ''}\nCurrent source evidence: ${JSON.stringify(this.lastObservation?.sources ?? {})}\nHost observation and live contracts: ${JSON.stringify({ ...this.lastObservation, sources: undefined, snapshot: { hash: this.lastObservation?.snapshot?.hash } })}\nPrevious review findings: ${JSON.stringify(previous?.reviews ?? [])}\nProtected files must not be changed: ${JSON.stringify(this.config.protectedPaths ?? [])}. Modify source only. Check alignment during execution. If the route is wrong, report it rather than silently expanding scope. Host runs tests and commits after you stop.`, outputSchema: { summary: 'string', filesChanged: ['string'] } });
+      // The builder's pre-dispatch risk is Host-computed from the validated
+      // candidate, never the Worker's self-report. Routing only picks a model
+      // for the already-selected Worker.
+      let builderRouting;
+      action.builderResult = await execute(activeBuilder, { role: 'build', actionId: id, capabilities: candidate.capabilities, risk: action.risk, onRouting: selection => { builderRouting = selection; }, workspace: tree.directory, outputFormat: this.commercial ? 'text' : undefined, prompt: `Goal: ${action.goal}\nProject goal: ${this.state.goal}\nCriteria: ${JSON.stringify(this.state.successCriteria)}\nDiagnosis: ${JSON.stringify(this.state.gaps)}\nAlignment feedback: ${this.lastAlignment?.text ?? ''}\nCurrent source evidence: ${JSON.stringify(this.lastObservation?.sources ?? {})}\nHost observation and live contracts: ${JSON.stringify({ ...this.lastObservation, sources: undefined, snapshot: { hash: this.lastObservation?.snapshot?.hash } })}\nPrevious review findings: ${JSON.stringify(previous?.reviews ?? [])}\nProtected files must not be changed: ${JSON.stringify(this.config.protectedPaths ?? [])}. Modify source only. Check alignment during execution. If the route is wrong, report it rather than silently expanding scope. Host runs tests and commits after you stop.`, outputSchema: { summary: 'string', filesChanged: ['string'] } });
+      if (builderRouting) action.routing = builderRouting;
       if (this.afterBuild) {
         const evidence = await this.afterBuild(clone(action), tree.directory);
         if (evidence) this.state.evidence.push({ kind: 'environment-event', actionId: id, ...clone(evidence) });
@@ -356,7 +418,7 @@ export class ProjectRuntime extends EventEmitter {
         const initial = await this.worktrees.snapshot(tree.directory);
         activeSnapshot = initial;
         const actionDiff = action.actionDiff ?? await this.worktrees.diff(action.worktree);
-        const report = await this.execute(reviewer, { role: 'review', actionId: action.id, workspace: tree.directory, outputSchema: REVIEW_SHAPE,
+        const report = await this.execute(reviewer, { role: 'review', actionId: action.id, security: required[action.reviews.length] === 'security', risk: action.risk, workspace: tree.directory, outputSchema: REVIEW_SHAPE,
           prompt: `Independently perform ${required[action.reviews.length]} review of this candidate commit ${action.commit}. Source access is read-only. Do not accept Builder claims as evidence.\nGoal: ${action.goal}\nSuccess criteria: ${JSON.stringify(this.state.successCriteria)}\nActual host test results on Builder tree: ${JSON.stringify(action.tests)}\nActual host tests on clean committed tree: ${JSON.stringify(action.committedTests)}\nCurrent action delta from its dispatch base:\n${actionDiff}\nCumulative candidate diff from accepted baseline (includes inherited rejected work):\n${action.diff}\nApply action-specific file scope to the current action delta, not inherited changes. Evaluate the ENTIRE cumulative candidate against project criteria and protected policy.\nProtected files intact: ${action.protectedIntact}\nReject failures, regressions, missing evidence or blocking risks. Do not modify files.`,
         });
         if (!['pass', 'reject', 'needs_more_evidence'].includes(report.verdict) || typeof report.reason !== 'string' || !Array.isArray(report.evidence) || !report.evidence.length || !Array.isArray(report.blockingRisks)) throw new Error('Invalid independent review report');

@@ -104,6 +104,32 @@ OpenCode 的大上下文按文件字节数、行长度和行数切分为多个�
 包装换行用于传输给模型，不保证内嵌 JSON 字符串仍是可直接解析的原始机器数据。
 超出附件预算时明确失败，不静默丢弃尾部的当前测试证据。
 
+## 自动模型路由
+
+`models` 是 Host 提供的模型登记表；启用后每次行动按任务证据选择模型，不再只用一个静态模型。
+
+```json
+{
+  "autoModelRouting": true,
+  "models": [
+    { "id": "opencode-go/deepseek-v4.1-flash", "provider": "opencode", "tier": "routine", "cost": 1 },
+    { "id": "opencode-go/deepseek-v4.1", "provider": "opencode", "tier": "deep", "cost": 3 },
+    { "id": "opencode-go/deepseek-v4-pro", "provider": "opencode", "tier": "deep", "cost": 9, "prohibited": true }
+  ]
+}
+```
+
+- `models[].provider` 必须与 `agents` 中的键一致；`tier` 为 `routine|deep|security`；`cost` 只是同层内的相对偏好，不是额度数量。
+- 默认：普通行动选 `routine` 层（如 V4.1 Flash）；高风险或连续/恶化失败上移到 `deep`；需要 security 能力的独立审核选 `security`；同层内取成本最低者。
+- 禁止项用元数据 `prohibited: true` 表示（例如 V4 Pro），绝不按模型名字匹配；`eligible: false` 同样排除。
+- 失败关闭：登记表为空、格式非法、或没有符合层级的可用模型时抛出 `RoutingError`，该行动按 `FAILED` 处理；不会把 provider 标记为离线，也不会触发无意义的额度交接。
+- 每次调用把 `task.model` 传给四个原生 adapter；`config.model` 只在路由关闭时作为回退。登记表存在但显式 `autoModelRouting: false` 时，静态 `config.model` 也必须是可用的登记项。
+- 路由证据以 `{ selectedModel, provider, reason, inputs, at }` 保存在行动、决策与每次运行记录上，并随 `/api/state` 的 `view()` 暴露，便于核查。
+- `quotaGroup` 由 Host 声明（例如把 Codex-backed Pi 与 Codex 设为同一组）；同组任一 Worker 离线时组内全部视为不可用，Codex 与 Pi 不会被当成两份独立预算。未声明时不做任何假设。
+- 路由只为已经选定的 Worker（包括独立 Reviewer）选择模型，不改变审核者选择；Builder 仍然不能选择自己的 Reviewer，额度交接、权限与最终 Gate 都不受影响。
+
+限制：路由完全由登记表驱动，不主张任何 provider 的额度数量或可用性；示例模型 id 需替换为真实配置；当前超时与额度耗尽都会折叠为同一个 offline 标记。
+
 ## 尚未证明的能力
 
 - 通用搜索、交互浏览和视觉对标需要额外 Host 能力，预设来源抓取不等于完整市场研究。

@@ -10,10 +10,24 @@
   "maxActions": 10,
   "agentTimeoutMs": 300000,
   "testTimeoutMs": 60000,
+  "autoModelRouting": true,
+  "models": [
+    { "id": "opencode-go/deepseek-v4.1-flash", "provider": "opencode", "tier": "routine", "cost": 1 },
+    { "id": "opencode-go/deepseek-v4.1", "provider": "opencode", "tier": "deep", "cost": 3 },
+    { "id": "opencode-go/deepseek-v4-pro", "provider": "opencode", "tier": "deep", "cost": 9, "prohibited": true },
+    { "id": "codex/gpt-5-mini", "provider": "codex", "tier": "routine", "cost": 1 },
+    { "id": "codex/gpt-5", "provider": "codex", "tier": "deep", "cost": 4 },
+    { "id": "codex/gpt-5-security", "provider": "codex", "tier": "security", "cost": 4 },
+    { "id": "pi/deepseek-v4.1-flash", "provider": "pi", "tier": "routine", "cost": 1 },
+    { "id": "pi/deepseek-v4.1", "provider": "pi", "tier": "deep", "cost": 3 },
+    { "id": "deepseek-v4-flash", "provider": "dsh", "tier": "routine", "cost": 1 },
+    { "id": "deepseek-v4.1", "provider": "dsh", "tier": "deep", "cost": 3 },
+    { "id": "deepseek-security", "provider": "dsh", "tier": "security", "cost": 3 }
+  ],
   "agents": {
-    "codex": { "executable": "codex", "capabilities": ["code", "debug", "ui", "review", "security", "reason"] },
+    "codex": { "executable": "codex", "quotaGroup": "codex-account", "capabilities": ["code", "debug", "ui", "review", "security", "reason"] },
     "opencode": { "executable": "opencode", "capabilities": ["code", "debug", "ui", "review", "security", "reason"] },
-    "pi": { "executable": "pi", "capabilities": ["code", "debug", "ui", "review", "reason"] },
+    "pi": { "executable": "pi", "quotaGroup": "codex-account", "capabilities": ["code", "debug", "ui", "review", "reason"] },
     "dsh": { "provider": "deepseek-official", "model": "deepseek-v4-flash", "capabilities": ["code", "debug", "ui", "review", "reason"] }
   }
 }
