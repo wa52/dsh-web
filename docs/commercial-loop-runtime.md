@@ -58,6 +58,14 @@ const runtime = ctx.autonomousControl.createProject(config, {
 Host 验收可以放在项目仓库之外，从工作目录检查新生成的产物，避免让 Builder 自己定义成功。
 当前不会自动把没有初始提交的目录初始化成可运行项目，也不自动安装依赖；Host 仍负责配置测试和所需执行环境。
 这些是当前接入边界，不能解释为产品必须已经做好才能进入 Loop。
+
+可复现的原生入口：`node scripts/live-new-project.mjs config.local.json [输出目录]`。
+它用 `createBriefFixture` 生成仅含产品说明与一次初始提交的仓库，把 Host 验收脚本放在产品仓库之外，
+由原生 OpenCode 通过 `ctx.autonomousControl.createProject` 构建产品，再由非 Codex 平台独立审核。
+入口先证明该 Host 验收在裸说明上失败，再要求 Builder 树与干净提交树都通过，主 checkout 未变、重启状态一致。
+报告 PASS 指候选达到 `MERGE_READY`，不是 `state.status === "complete"`；最终完成审核的 outcome 单独记录。
+需要新的输出目录，Codex 不注册（不假设其额度可用）；额度不足时仍按交接规则处理，失败如实报告。
+这只是有限、可复现的原生验收入口，不是完整商业产品交付证明，也没有替代已有项目演进实验。
 从零到完整商业产品的原生多平台验收仍需另外运行；已有电商修复实验只证明演进场景。
 
 ## 本轮如何运行

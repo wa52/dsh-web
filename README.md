@@ -88,12 +88,19 @@ npm run test:agents -- config.local.json
 node scripts/live-workers.mjs config.local.json
 npm run test:live -- config.local.json
 node scripts/live-recovery.mjs config.local.json
+node scripts/live-new-project.mjs config.local.json
 ```
 
 自动测试包含明确标注的 test-double 决策，用于确定性验证 Gate、回归拒审、worktree、重启和恢复。
 `test:agents` 使用真实 provider 验证连接；`live-workers` 验证四种真实写入及独立审核。
 `test:live` 使用实际模型重新诊断，没有 TODO 顺序或预设审核结论；它在第一次 Builder 停止后
 记录并注入一次配送回归，要求真实测试和 Reviewer 拒绝，再重新规划。
+`live-new-project` 是仅含产品说明的初始提交仓库的原生新项目验收入口：
+`createBriefFixture` 只生成产品说明和一次初始提交，Host 验收脚本放在产品仓库之外并先证明它在裸说明上失败，
+再由原生 OpenCode 通过 `ctx.autonomousControl.createProject` 构建产品，另用非 Codex 平台独立审核；
+候选必须让 Builder 树与干净提交树都通过，主 checkout 未变且重启状态一致。报告中的 PASS 指候选达到
+`MERGE_READY`，不是 `state.status === "complete"`，最终完成审核的 outcome 单独记录。
+该入口是有限、可复现的原生验收入口，不代表完整商业产品交付。
 报告写入 `.tmp/`。恢复测试验证独立启动故障 fixture，不代表已覆盖所有生产 Harness 故障。
 临时 observe/review worktree 与分支自动清理；候选 build checkout/分支保留供审查、恢复和人工合并。
 OpenCode 的大段提示词使用 `run --file` 附件传输，避免 Windows 命令行长度限制。
