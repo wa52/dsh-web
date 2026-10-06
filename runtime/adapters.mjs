@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ProcessAdapter, parseObject } from './process.mjs';
 import { policyFor } from './permissions.mjs';
+import { assertPaidApiRunAuthorization } from './paid-authorization.mjs';
 const require = createRequire(import.meta.url);
 const textOf = content => (content ?? []).filter(block => block.type === 'text').map(block => block.text).join('');
 const guardModule = pathToFileURL(fileURLToPath(new URL('./permissions.mjs', import.meta.url))).href;
@@ -46,7 +47,15 @@ async function cliSpec(provider, config, task) {
   // Per-call Host routing wins; the static config.model stays the fallback when
   // routing is disabled, preserving the previous default behavior.
   const model = task.model ?? config.model;
-  const modelArgs = model ? ['--model', model] : [];
+  const openCodeProvider = config.openCodeProvider;
+  if (openCodeProvider) {
+    if (typeof openCodeProvider.id !== 'string' || !/^[a-z0-9_-]+$/i.test(openCodeProvider.id)
+      || typeof openCodeProvider.baseURL !== 'string' || !/^https?:\/\//i.test(openCodeProvider.baseURL)
+      || typeof openCodeProvider.name !== 'string' || !openCodeProvider.name.trim()) throw new Error('Invalid OpenCode custom provider configuration');
+    if (openCodeProvider.apiKeyEnv !== undefined && (typeof openCodeProvider.apiKeyEnv !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(openCodeProvider.apiKeyEnv))) throw new Error('OpenCode custom provider apiKeyEnv must name an environment variable');
+  }
+  const nativeModel = model && openCodeProvider ? `${openCodeProvider.id}/${model}` : model;
+  const modelArgs = nativeModel ? ['--model', nativeModel] : [];
   const base = { executable: config.executable ?? provider, env: config.env ?? {} };
   if (provider === 'codex') {
     const output = path.join(task.artifactDir, `${task.runKey}-answer.json`);
@@ -67,6 +76,8 @@ async function cliSpec(provider, config, task) {
   }
   if (provider === 'opencode') {
     const root = task.workspace.replaceAll('\\', '/');
+    if (openCodeProvider && !model) throw new Error('OpenCode custom provider requires an explicit API model id');
+    if (openCodeProvider?.apiKeyEnv && !process.env[openCodeProvider.apiKeyEnv]) throw new Error(`Missing required environment variable ${openCodeProvider.apiKeyEnv} for OpenCode custom provider`);
     const permissions = { '*': 'deny', read: permission.read ? 'allow' : 'deny', glob: permission.read ? 'allow' : 'deny', grep: permission.read ? 'allow' : 'deny', list: permission.read ? 'allow' : 'deny', external_directory: 'deny', edit: permission.write ? { '*': 'allow', '../*': 'deny', '..\\*': 'deny', '.git*': 'deny', [`${root}/.git*`]: 'deny' } : 'deny', bash: 'deny', webfetch: 'deny', websearch: 'deny', task: 'deny' };
     let answer = '';
     // Keep large evidence off Windows argv. Retain this host-owned attachment
@@ -77,8 +88,15 @@ async function cliSpec(provider, config, task) {
       const file = path.join(task.artifactDir, `${launchKey}-opencode-prompt${index ? `-${String(index).padStart(3, '0')}` : ''}.txt`);
       await writeFile(file, chunk, { mode: 0o600 }); attachments.push(file);
     }
+    const providerConfig = openCodeProvider ? { provider: { [openCodeProvider.id]: {
+      npm: '@ai-sdk/openai-compatible', name: openCodeProvider.name,
+      options: { baseURL: openCodeProvider.baseURL, ...(openCodeProvider.apiKeyEnv ? { apiKey: `{env:${openCodeProvider.apiKeyEnv}}` } : {}) },
+      models: { [model]: { name: openCodeProvider.modelName ?? model } },
+    } } } : {};
     return { ...base, args: ['run', '--pure', '--format', 'json', '--dir', task.workspace, '--title', `DSH ${launchKey}`, ...modelArgs, ...attachments.flatMap(file => ['--file', file]), '--', 'Read ALL attached prompt parts in filename order. They contain one bounded action and its complete current evidence. Long serialized lines are hard-wrapped for ReadTool; do not treat wrapping as absent evidence. Follow the response format at the end.'], stdin: '',
-      env: { ...base.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: permissions, agent: { control: { mode: 'primary', permission: permissions } } }) },
+      // Provider-only settings are constructed from an allowlist. Host permission
+      // and tool fences are always written last and cannot be overridden.
+      env: { ...base.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...providerConfig, permission: permissions, agent: { control: { mode: 'primary', permission: permissions } }, mcp: { '*': { enabled: false } }, plugin: [] }) },
       onFrame: frame => {
         if (frame.type === 'text') answer = frame.part?.text ?? frame.text ?? '';
         if (frame.type === 'error') throw new Error(JSON.stringify(frame.error));
@@ -145,14 +163,22 @@ async function cliSpec(provider, config, task) {
 }
 
 export function createAgentAdapter(provider, config = {}) {
-  const adapter = new ProcessAdapter({ id: config.id ?? provider, identity: config.identity ?? randomUUID(), provider, roles: config.roles ?? ['build', 'review', 'decide', 'recovery'], capabilities: config.capabilities ?? ['code', 'debug', 'ui', 'review', 'reason'], trust: config.trust ?? (provider === 'codex' ? 0.95 : 0.75), cost: config.cost ?? 1, permissions: config.permissions, model: config.model, quotaGroup: config.quotaGroup }, async task => {
+  if (config.paidApi && (provider !== 'opencode' || !config.openCodeProvider || config.paidApi.endpoint !== config.openCodeProvider.baseURL)) throw new Error('Paid API connections require the OpenCode custom provider endpoint to match paidApi.endpoint exactly');
+  const adapter = new ProcessAdapter({ id: config.id ?? provider, identity: config.identity ?? randomUUID(), provider, connectionId: config.connectionId ?? config.id ?? provider, accountId: config.accountId, enabled: config.enabled !== false, roles: config.roles ?? ['build', 'review', 'decide', 'recovery'], capabilities: config.capabilities ?? ['code', 'debug', 'ui', 'review', 'reason'], trust: config.trust ?? (provider === 'codex' ? 0.95 : 0.75), cost: config.cost ?? 1, permissions: config.permissions, model: config.model, quotaGroup: config.quotaGroup, paidApi: config.paidApi, openCodeProvider: config.openCodeProvider }, async task => {
     const spec = await cliSpec(provider, config, task);
     spec.args = [...(config.argsPrefix ?? []), ...spec.args];
     return spec;
   });
+  if (!adapter.enabled) adapter.availability = 'offline';
   adapter.handles = new Map();
   const start = adapter.start.bind(adapter);
   adapter.start = async task => {
+    if (!adapter.enabled) throw Object.assign(new Error(`Connection ${adapter.id} is disabled in Host configuration`), { failureKind: 'authorization-needed' });
+    if (adapter.paidApi) {
+      assertPaidApiRunAuthorization(task.paidApiAuthorization, {
+        connectionId: adapter.connectionId, modelId: task.model ?? adapter.model, endpoint: adapter.paidApi.endpoint, runId: task.runKey,
+      });
+    }
     const run = await start(task); adapter.handles.set(run.id, run);
     for (const [id, record] of adapter.runs) {
       if (adapter.runs.size <= 100) break;

@@ -11,6 +11,7 @@ import { runCommand, redact, classifyFailure } from './process.mjs';
 import { changedPathRisk, sourceObservation, testSummary } from './governance.mjs';
 import { CommercialLoop } from './commercial.mjs';
 import { normalizeModelRegistry, routeModel, RoutingError } from './routing.mjs';
+import { reservePaidApiRun, eligiblePaidConnections } from './paid-authorization.mjs';
 
 const safeError = error => redact(error instanceof Error ? error.message : String(error));
 
@@ -26,6 +27,8 @@ export class ProjectRuntime extends EventEmitter {
     this.worktrees = new WorktreeManager(this.repository, path.join(this.store.directory, 'worktrees'), this.id);
     this.registry = new AgentRegistry();
     agents.forEach(agent => this.registry.add(agent));
+    this.paidModelEligibility = new Set();
+    this.registry.eligible = agent => !agent.paidApi || [...this.paidModelEligibility].some(key => key.startsWith(`${agent.connectionId ?? agent.id}\0`));
     this.assertModelRegistry();
     this.assessment = assessment;
     this.observeExtra = observe;
@@ -54,6 +57,7 @@ export class ProjectRuntime extends EventEmitter {
       this.state = loaded;
       if (loaded.policyHash && loaded.policyHash !== policyHash) throw new Error('Host tests or constraints differ from persisted policy; create a new stateDir');
       if (!loaded.policyHash) { loaded.policyHash = policyHash; await this.checkpoint(); }
+      await this.refreshPaidEligibility();
       const previousAlignment = loaded.alignments?.at(-1);
       if (this.commercial && previousAlignment?.notesPath) this.lastAlignment = { ...previousAlignment, text: await this.artifact(previousAlignment.notesPath) };
       return clone(loaded);
@@ -67,7 +71,22 @@ export class ProjectRuntime extends EventEmitter {
     };
     // Initialization creates no Worker and cannot alter project source.
     await this.checkpoint();
+    await this.refreshPaidEligibility();
     return clone(this.state);
+  }
+
+  async refreshPaidEligibility() {
+    const models = this.modelCatalog() ? normalizeModelRegistry(this.modelCatalog()) : [];
+    const requirements = [];
+    for (const agent of this.registry.agents.values()) {
+      if (!agent.paidApi?.endpoint) continue;
+      const connectionId = agent.connectionId ?? agent.id;
+      const candidates = this.config.autoModelRouting === false || !models.length
+        ? [agent.model].filter(Boolean).map(modelId => ({ id: modelId, paid: true, eligible: true, endpoint: agent.paidApi.endpoint, connectionId }))
+        : models.filter(model => model.paid && model.eligible && model.connectionId === connectionId && model.endpoint === agent.paidApi.endpoint);
+      for (const model of candidates) requirements.push({ connectionId, modelId: model.id, endpoint: model.endpoint });
+    }
+    this.paidModelEligibility = new Set(await eligiblePaidConnections({ stateDir: this.store.directory, project: this.repository, requirements }));
   }
 
   checkpoint() {
@@ -99,24 +118,55 @@ export class ProjectRuntime extends EventEmitter {
 
   /** Validate the Host model registry once; enforce the static-model rule when routing is disabled. */
   assertModelRegistry() {
+    const connectionIds = new Set();
+    for (const agent of this.registry.agents.values()) {
+      if (!agent.connectionId) continue;
+      if (connectionIds.has(agent.connectionId)) throw new RoutingError(`Duplicate connectionId ${agent.connectionId}; each adapter alias needs a distinct connection identity`, 'INVALID_CONNECTION');
+      connectionIds.add(agent.connectionId);
+    }
     const catalog = this.modelCatalog();
     if (!catalog) return;
-    normalizeModelRegistry(catalog);
+    const models = normalizeModelRegistry(catalog);
+    const transports = new Map();
+    for (const agent of this.registry.agents.values()) {
+      if (!agent.provider) continue;
+      if (!transports.has(agent.provider)) transports.set(agent.provider, new Set());
+      if (agent.connectionId) transports.get(agent.provider).add(agent.connectionId);
+    }
+    for (const model of models) {
+      if (model.connectionId === undefined && (transports.get(model.provider)?.size ?? 0) > 1) throw new RoutingError(`Model ${model.id} must identify a connection because ${model.provider} has multiple configured connections`, 'AMBIGUOUS_CONNECTION');
+    }
+    for (const agent of this.registry.agents.values()) {
+      if (!agent.paidApi) continue;
+      if (!agent.paidApi.endpoint || agent.openCodeProvider?.baseURL !== agent.paidApi.endpoint) throw new RoutingError(`Paid connection ${agent.connectionId ?? agent.id} requires a matching custom-provider endpoint`, 'INVALID_REGISTRY');
+      if (agent.model) {
+        const staticModel = models.find(model => model.id === agent.model && model.connectionId === (agent.connectionId ?? agent.id ?? agent.provider));
+        if (!staticModel?.paid || staticModel.endpoint !== agent.paidApi.endpoint) throw new RoutingError(`Paid connection ${agent.connectionId ?? agent.id} static model ${agent.model} must be explicitly marked paid at its exact endpoint`, 'INVALID_REGISTRY');
+      }
+    }
+    for (const model of models) {
+      if (model.paid && (!model.connectionId || !model.endpoint)) throw new RoutingError(`Paid model ${model.id} requires exact connectionId and endpoint metadata`, 'INVALID_REGISTRY');
+      if (model.connectionId && ![...this.registry.agents.values()].some(agent => (agent.connectionId ?? agent.id ?? agent.provider) === model.connectionId)) throw new RoutingError(`Model ${model.id} references unknown connection ${model.connectionId}`, 'INVALID_REGISTRY');
+      if (model.paid && ![...this.registry.agents.values()].some(agent => (agent.connectionId ?? agent.id ?? agent.provider) === model.connectionId && agent.paidApi?.endpoint === model.endpoint && agent.openCodeProvider?.baseURL === model.endpoint)) throw new RoutingError(`Paid model ${model.id} lacks matching paid connection metadata`, 'INVALID_REGISTRY');
+    }
+    const collisions = new Map();
+    for (const model of models) collisions.set(model.id, (collisions.get(model.id) ?? 0) + 1);
+    for (const [id, count] of collisions) if (count > 1 && models.filter(model => model.id === id).some(model => !model.connectionId)) throw new RoutingError(`Repeated model id ${id} requires explicit connection identity on every entry`, 'INVALID_REGISTRY');
     if (this.config.autoModelRouting === false) {
       for (const agent of this.registry.agents.values()) {
         if (!agent.model) continue;
-        const entry = catalog.find(model => model?.id === agent.model);
+        const entry = catalog.find(model => model?.id === agent.model && (!model.connectionId || model.connectionId === (agent.connectionId ?? agent.id ?? agent.provider)));
         if (!entry || entry.prohibited === true || entry.eligible === false) throw new RoutingError(`Static model ${agent.model} is not an eligible entry in the Host model registry`, 'INELIGIBLE_STATIC_MODEL');
       }
     }
   }
 
-  /** Host-computed providers currently quarantined, including shared quotaGroup members. */
-  unavailableProviders() {
+  /** Host-computed connections currently quarantined, including shared quotaGroup members. */
+  unavailableConnections() {
     const unavailable = this.registry.unavailable();
-    const providers = new Set();
-    for (const agent of this.registry.agents.values()) if (unavailable.has(agent.id) && agent.provider) providers.add(agent.provider);
-    return [...providers];
+    const connections = new Set();
+    for (const agent of this.registry.agents.values()) if (unavailable.has(agent.id)) connections.add(agent.connectionId ?? agent.provider ?? agent.id);
+    return [...connections];
   }
 
   /**
@@ -127,23 +177,36 @@ export class ProjectRuntime extends EventEmitter {
   routeFor(agent, task) {
     const catalog = this.modelCatalog();
     if (!catalog || this.config.autoModelRouting === false) return undefined;
-    const selection = routeModel({
+    const connectionId = agent.connectionId;
+    const eligibleCatalog = normalizeModelRegistry(catalog).filter(model => !model.paid || this.paidModelEligibility.has(`${model.connectionId}\0${model.id}\0${model.endpoint}`));
+    let selection;
+    try { selection = routeModel({
       provider: agent.provider,
+      ...(connectionId ? { connectionId } : {}),
       role: task.role,
       capabilities: task.capabilities,
       security: task.security,
       risk: task.risk,
       escalate: task.escalate,
-      unavailable: [...this.unavailableProviders(), ...(task.unavailableModels ?? [])],
-    }, catalog);
-    return { selectedModel: selection.selectedModel, provider: selection.provider, reason: selection.reason, inputs: selection.inputs, at: new Date().toISOString() };
+      unavailable: [...this.unavailableConnections(), ...(task.unavailableModels ?? [])],
+    }, eligibleCatalog); }
+    catch (error) {
+      const paidChoiceDenied = normalizeModelRegistry(catalog).some(model => model.paid && model.eligible && model.connectionId === connectionId && !this.paidModelEligibility.has(`${model.connectionId}\0${model.id}\0${model.endpoint}`));
+      if (paidChoiceDenied && ['NO_ELIGIBLE_MODEL', 'EMPTY_REGISTRY'].includes(error.code)) {
+        const blocked = new Error(`Paid API authorization needed for connection ${connectionId}; no eligible funded model remains`);
+        blocked.failureKind = 'authorization-needed';
+        throw blocked;
+      }
+      throw error;
+    }
+    return { selectedModel: selection.selectedModel, provider: selection.provider, connectionId: selection.connectionId, paid: selection.paid, endpoint: selection.endpoint, reason: selection.reason, inputs: selection.inputs, at: new Date().toISOString() };
   }
 
   sharedWorker(role, capabilities = [], exclude = []) {
     const id = this.state.sharedWorker ?? this.config.commercialLoop?.worker;
     const current = this.registry.agents.get(id);
     const unavailable = this.registry.unavailable();
-    if (current && !unavailable.has(current.id) && current.roles.includes(role) && capabilities.every(c => current.capabilities.includes(c)) && !exclude.includes(current.id)) return current;
+    if (current && this.registry.eligible(current) && !unavailable.has(current.id) && current.roles.includes(role) && capabilities.every(c => current.capabilities.includes(c)) && !exclude.includes(current.id)) return current;
     const next = this.registry.select({ role, capabilities, exclude }, this.state.agentPerformance);
     this.state.sharedWorker = next.id;
     return next;
@@ -184,11 +247,13 @@ export class ProjectRuntime extends EventEmitter {
         }
         const snapshot = await this.worktrees.snapshot(task.workspace);
         const attempt = attempted.length;
-        const failedModels = [...new Set([...(task.unavailableModels ?? []), ...(attemptRouting?.selectedModel ? [attemptRouting.selectedModel] : [])])];
+        const failedModel = attemptRouting?.selectedModel ? `${attemptRouting.connectionId ?? agent.connectionId ?? agent.id}::${attemptRouting.selectedModel}` : undefined;
+        const failedModels = [...new Set([...(task.unavailableModels ?? []), ...(failedModel ? [failedModel] : [])])];
         handoff = { id: randomUUID(), from: agent.id, to: null, attempt, role: task.role, actionId: task.actionId, workspace: task.workspace, snapshotHash: snapshot.hash, error: safeError(error), failureKind, finishReason: error.finishReason, usage: error.usage, failedModel: attemptRouting?.selectedModel, failureRouting: attemptRouting, unavailableModels: failedModels, at: new Date().toISOString(), status: 'waiting' };
         this.state.handoffs ??= []; this.state.handoffs.push(handoff);
         await atomicJson(path.join(this.store.directory, 'evidence', handoff.id, 'checkpoint.json'), { ...handoff, snapshot, goal: this.state.goal, prompt: task.prompt, latestAlignment: this.lastAlignment?.text });
         await this.checkpoint();
+        await this.refreshPaidEligibility();
         let next;
         try { next = this.sharedWorker(task.role, task.role === 'build' ? task.capabilities ?? [] : ['reason'], attempted); }
         catch (routingError) { handoff.status = 'failed'; handoff.routingError = safeError(routingError); await this.checkpoint(); throw routingError; }
@@ -212,6 +277,7 @@ export class ProjectRuntime extends EventEmitter {
 
   async alignment(stage, observation, tree, action, enforce = true) {
     if (!this.commercial) return;
+    await this.refreshPaidEligibility();
     let record;
     const limit = this.config.commercialLoop.maxAlignmentAttempts ?? 2;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 3) throw new Error('maxAlignmentAttempts must be 1..3');
@@ -249,7 +315,22 @@ export class ProjectRuntime extends EventEmitter {
     await this.checkpoint(); // Durable before any Worker is spawned.
     let run;
     try {
-      run = await agent.start({ ...task, model: routing?.selectedModel, runKey, artifactDir, permissions: policyFor(task.role, this.state.permissions), timeoutMs: this.config.agentTimeoutMs ?? 300_000, signal: abort.signal, onEvent: event => {
+      const selectedModel = routing?.selectedModel ?? task.model ?? agent.model;
+      const modelEntry = this.modelCatalog() && normalizeModelRegistry(this.modelCatalog()).find(model => model.id === selectedModel && (!model.connectionId || model.connectionId === (agent.connectionId ?? agent.id ?? agent.provider)));
+      let paidApiAuthorization;
+      if (agent.paidApi) {
+        if (!selectedModel || !agent.paidApi.endpoint || (this.modelCatalog() && (!modelEntry || !modelEntry.paid || modelEntry.endpoint !== agent.paidApi.endpoint))) {
+          const error = new Error(`Paid API authorization needed: connection ${agent.connectionId ?? agent.id}, model ${selectedModel ?? '(unspecified)'} is not explicitly registered as paid`);
+          error.failureKind = 'authorization-needed';
+          throw error;
+        }
+        paidApiAuthorization = await reservePaidApiRun({ stateDir: this.store.directory, connectionId: agent.connectionId ?? agent.id, modelId: selectedModel, endpoint: agent.paidApi.endpoint, project: this.repository, runId: runKey });
+      } else if (modelEntry?.paid) {
+        const error = new Error(`Paid API authorization needed: connection ${modelEntry.connectionId}, model ${selectedModel} is not configured as a paid connection`);
+        error.failureKind = 'authorization-needed';
+        throw error;
+      }
+      run = await agent.start({ ...task, model: routing?.selectedModel ?? task.model, paidApiAuthorization, runKey, artifactDir, permissions: policyFor(task.role, this.state.permissions), timeoutMs: this.config.agentTimeoutMs ?? 300_000, signal: abort.signal, onEvent: event => {
         if (event.type === 'run-started') Object.assign(launchIntent, event, { role: task.role, actionId: task.actionId });
         this.emit('run', event);
       } });
@@ -303,6 +384,7 @@ export class ProjectRuntime extends EventEmitter {
   }
 
   async decide(observation, tree) {
+    await this.refreshPaidEligibility();
     await this.event('DECIDE');
     // Imperfect diagnosis is input, not permission to execute. Plan and
     // candidate/completion gates still require independent PASS.
@@ -341,6 +423,7 @@ export class ProjectRuntime extends EventEmitter {
   }
 
   async build(selected) {
+    await this.refreshPaidEligibility();
     const { decision, candidate, builder } = selected;
     const previous = this.state.actions.findLast(action => action.phase === 'REJECTED' && action.acceptedBase === this.state.acceptedHead && action.disposition !== 'abandoned') ?? this.state.actions.at(-1);
     const repair = previous?.phase === 'REJECTED' && candidate.strategy !== 'replace';
@@ -416,6 +499,7 @@ export class ProjectRuntime extends EventEmitter {
   }
 
   async review(action) {
+    await this.refreshPaidEligibility();
     if ((action.reviewAttempts ?? 0) >= (this.config.maxReviewAttempts ?? 3)) {
       action.phase = 'HALTED'; await this.checkpoint(); throw new Error('Independent review retry budget exhausted');
     }

@@ -119,14 +119,44 @@ OpenCode 的大上下文按文件字节数、行长度和行数切分为多个�
 }
 ```
 
-- `models[].provider` 必须与 `agents` 中的键一致；`tier` 为 `routine|deep|security`；`cost` 只是同层内的相对偏好，不是额度数量。
+- `models[].provider` 是原生 transport（例如 `opencode`），`models[].connectionId` 是具体连接；`tier` 为 `routine|deep|security`；`cost` 只是同层内的相对偏好，不是额度数量。
 - 默认：普通行动选 `routine` 层（如 V4.1 Flash）；高风险或连续/恶化失败上移到 `deep`；需要 security 能力的独立审核选 `security`；同层内取成本最低者。
 - 禁止项用元数据 `prohibited: true` 表示（例如 V4 Pro），绝不按模型名字匹配；`eligible: false` 同样排除。
 - 失败关闭：登记表为空、格式非法、或没有符合层级的可用模型时抛出 `RoutingError`，该行动按 `FAILED` 处理；不会把 provider 标记为离线，也不会触发无意义的额度交接。
-- 每次调用把 `task.model` 传给四个原生 adapter；`config.model` 只在路由关闭时作为回退。登记表存在但显式 `autoModelRouting: false` 时，静态 `config.model` 也必须是可用的登记项。
-- 路由证据以 `{ selectedModel, provider, reason, inputs, at }` 保存在行动、决策与每次运行记录上，并随 `/api/state` 的 `view()` 暴露，便于核查。
-- `quotaGroup` 由 Host 声明（例如把 Codex-backed Pi 与 Codex 设为同一组）；只有显式额度错误会让同组全部视为不可用，Codex 与 Pi 不会被当成两份独立预算。未声明时不做任何假设。
+- 每次调用把 `task.model` 传给四个原生 transport adapter；`config.model` 只在路由关闭时作为回退。登记表存在但显式 `autoModelRouting: false` 时，静态 `config.model` 也必须是可用的登记项。
+- `agents` 中的配置键是连接 alias；`transport` 选择原生 adapter，`connectionId` 是 Host 声明的登录/计费身份，`accountId` 可作 Host 侧说明，`quotaGroup` 仅表示共享额度。CLI 将 alias 注册为独立 Worker，不把 alias 当作 transport。Runtime 不会探测真实供应商账户或余额；需要确保各 alias 实际使用相应登录，并在需要时通过该 CLI 支持的外部 profile 环境隔离登录状态。
+- 模型表中 `provider` 表示 transport，`connectionId` 表示具体连接。未指定 `connectionId` 的旧表按 provider-key 连接兼容；多账户配置应显式填写。重复 API model id 仅在每条记录都有不同、明确的 `connectionId` 时有效。
+- 路由证据以 `{ selectedModel, provider, connectionId, reason, inputs, at }` 保存；`selectedModel` 是 provider API model id。相同 transport 的账户故障仅排除故障连接及其显式 quota peers，不会隔离其他独立账号。失败模型标识绑定 `connectionId`，另一个账户上相同 model id 仍可用。
+- `quotaGroup` 由 Host 声明（例如把 Codex-backed Pi 与 Codex 设为同一组）；只有显式额度错误会让同组全部视为不可用。超时和传输失败只影响当前连接/运行；没有声明时不推断共享额度。
 - 路由只为已经选定的 Worker（包括独立 Reviewer）选择模型，不改变审核者选择；Builder 仍然不能选择自己的 Reviewer，额度交接、权限与最终 Gate 都不受影响。
+
+### Paid OpenCode custom-provider connections
+
+使用 `transport: "opencode"` 加独立 alias/`connectionId` 配置 native custom provider；
+provider 配置由 Host 只接收 `id`、`name`、`baseURL`、模型显示名和 API key 环境变量名，
+不能覆盖 permission、MCP、plugin 或 Worker tool fences。凭证只能通过如
+`apiKeyEnv: "DEEPSEEK_API_KEY"` 引用；环境变量存在本身不构成授权。
+
+DeepSeek V4.1 Flash API model id 为 `deepseek-flash`，GLM 5.3 Flash 为 `glm-5.3-flash`。
+在模型和连接上都显式标记付费，并绑定精确 endpoint；新连接/模型示例均禁用且不可路由。
+授权须由 Host operator 在本地交互终端执行，例如：
+
+```sh
+node scripts/paid-api-authorization.mjs --state-dir ../dsh-state/example --grant \
+  --project D:/projects/example --connection deepseek-api --models deepseek-flash \
+  --endpoint https://api.deepseek.com --expires 2026-10-20T12:00:00Z --max-worker-runs 3
+```
+
+只有明确键入 `APPROVE deepseek-api` 才写入授权账本；另一个 grant 可只准许
+`glm-5.3-flash` 和其 endpoint。撤销使用同一命令加 `--revoke <grant-id>` 并键入确认。
+账本保存在仓库/workspace 外的 `stateDir/paid-api/ledger.json`。Host 在 adapter 准备前
+校验并原子预留 run；并发调用不会超出 `maxWorkerRuns`，预留在崩溃、spawn 失败和重启后
+不退还。越界、过期、撤销、用尽或 scope 不匹配会 fail closed；未经授权的 paid 模型会被
+跳过，选择其余有资格的已授权订阅连接，否则返回持久的 authorization-needed 阻塞原因。
+
+`maxWorkerRuns` 只限制 Worker 启动数，不限制每个 Worker 的 API 请求、token 或货币开销；
+一次 Worker run 可以发起多次请求，因此它不是 API 费用预算或货币支出上限。示例默认
+`enabled: false`、`eligible: false`，无需设置新 API key，也不会触发实际付费调用。
 
 ### 失败分类与额度交接
 

@@ -16,7 +16,13 @@ if (args.includes('--help')) {
   const configFile = option('--config');
   if (configFile) {
     const config = JSON.parse(await readFile(configFile, 'utf8'));
-    const agents = Object.entries(config.agents ?? {}).map(([provider, options]) => createAgentAdapter(provider, options));
+    const agents = Object.entries(config.agents ?? {}).map(([alias, options]) => {
+      const settings = { ...options, id: options.id ?? alias, connectionId: options.connectionId ?? alias };
+      if (settings.enabled !== false && settings.openCodeProvider?.apiKeyEnv && !process.env[settings.openCodeProvider.apiKeyEnv]) {
+        throw new Error(`Connection ${alias} requires environment variable ${settings.openCodeProvider.apiKeyEnv}; configure it before startup`);
+      }
+      return createAgentAdapter(settings.transport ?? alias, settings);
+    });
     runtime = ctx.autonomousControl.createProject(config, { agents });
     await runtime.initialize();
   }

@@ -31,7 +31,7 @@ export class ModelDecision {
     const preferred = preference && preference !== 'auto' ? preference : (escalate ? 'codex' : 'dsh');
     const primary = this.registry.agents.get(preferred);
     const unavailable = this.registry.unavailable();
-    const viable = primary?.roles.includes('decide') && primary.capabilities.includes('reason') && !unavailable.has(preferred) && (typeof this.preferred === 'function' || (state.agentPerformance[preferred]?.consecutiveFailures ?? 0) < 2);
+    const viable = primary?.roles.includes('decide') && primary.capabilities.includes('reason') && this.registry.eligible(primary) && !unavailable.has(preferred) && (typeof this.preferred === 'function' || (state.agentPerformance[preferred]?.consecutiveFailures ?? 0) < 2);
     let agent = viable ? primary : this.registry.select({ role: 'decide', capabilities: ['reason'], risk: escalate ? 'high' : 'normal' }, state.agentPerformance);
     const capabilities = new Set([...this.registry.agents.values()].flatMap(agent => agent.capabilities));
     let report;

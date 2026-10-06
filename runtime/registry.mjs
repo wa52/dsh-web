@@ -1,7 +1,7 @@
 import { unavailableAgentIds } from './routing.mjs';
 
 export class AgentRegistry {
-  constructor() { this.agents = new Map(); }
+  constructor() { this.agents = new Map(); this.eligible = () => true; }
   add(adapter) {
     if (!adapter.id || typeof adapter.start !== 'function' || this.agents.has(adapter.id)) throw new Error('Invalid or duplicate adapter');
     this.agents.set(adapter.id, adapter); return adapter;
@@ -12,13 +12,18 @@ export class AgentRegistry {
   isUnavailable(id) { return this.unavailable().has(id); }
   select({ role, capabilities = [], risk = 'normal', exclude = [], preferred }, performance = {}) {
     const unavailable = this.unavailable();
-    const candidates = [...this.agents.values()].filter(agent => !unavailable.has(agent.id) && agent.roles.includes(role) && !exclude.includes(agent.id) && capabilities.every(c => agent.capabilities.includes(c)));
+    const candidates = [...this.agents.values()].filter(agent => this.eligible(agent) && !unavailable.has(agent.id) && agent.roles.includes(role) && !exclude.includes(agent.id) && capabilities.every(c => agent.capabilities.includes(c)));
     const scored = candidates.map(agent => {
       const history = performance[agent.id] ?? { successes: 0, failures: 0 };
       const rate = (history.successes + 1) / (history.successes + history.failures + 2);
       return { agent, score: rate * 4 + agent.trust * (risk === 'high' ? 4 : 1) - (agent.cost ?? 1) * 0.1 + (agent.id === preferred ? 0.2 : 0) - (history.consecutiveFailures ?? 0) };
     }).sort((a, b) => b.score - a.score || a.agent.id.localeCompare(b.agent.id));
-    if (!scored.length) throw new Error(`No available agent for ${role}/${capabilities.join(',')}`);
+    if (!scored.length) {
+      const needsAuthorization = [...this.agents.values()].some(agent => agent.paidApi && !this.eligible(agent) && agent.roles.includes(role) && capabilities.every(c => agent.capabilities.includes(c)) && !exclude.includes(agent.id));
+      const error = new Error(`No available agent for ${role}/${capabilities.join(',')}${needsAuthorization ? '; paid API authorization needed or exhausted' : ''}`);
+      if (needsAuthorization) error.failureKind = 'authorization-needed';
+      throw error;
+    }
     return scored[0].agent;
   }
   describe(performance = {}) { return [...this.agents.values()].map(agent => ({ ...agent.describe(), performance: performance[agent.id] ?? { successes: 0, failures: 0 }, permissions: agent.permissions })); }

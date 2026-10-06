@@ -225,7 +225,7 @@ export class ProcessAdapter {
   }
   send(id, message) { const run = this.handles?.get(id); if (!run) throw new Error('Unknown live run'); return run.send(message); }
   status(id) { return this.runs.get(id)?.status ?? 'unknown'; }
-  describe() { return { id: this.id, provider: this.provider, capabilities: this.capabilities, trust: this.trust, cost: this.cost, roles: this.roles, availability: this.availability, runs: [...this.runs.values()] }; }
+  describe() { return { id: this.id, provider: this.provider, transport: this.provider, connectionId: this.connectionId, accountId: this.accountId, quotaGroup: this.quotaGroup, enabled: this.enabled !== false, ...(this.paidApi ? { paidApi: { endpoint: this.paidApi.endpoint, authorizationRequired: true } } : {}), capabilities: this.capabilities, trust: this.trust, cost: this.cost, roles: this.roles, availability: this.availability, runs: [...this.runs.values()] }; }
 }
 
 export async function runCommand(command, workspace, { timeoutMs = 60_000, artifactDir, name = 'test', signal } = {}) {

@@ -33,16 +33,26 @@ export class RoutingError extends Error {
 export function normalizeModelRegistry(registry) {
   const models = Array.isArray(registry) ? registry : registry?.models;
   if (!Array.isArray(models) || !models.length) throw new RoutingError('Host model registry is empty', 'EMPTY_REGISTRY');
-  const seen = new Set();
+  const seen = new Map();
   return models.map(entry => {
     if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || !entry.id.trim()) throw new RoutingError('Model registry entry requires a string id', 'INVALID_REGISTRY');
     if (typeof entry.provider !== 'string' || !entry.provider.trim()) throw new RoutingError(`${entry.id} requires a provider`, 'INVALID_REGISTRY');
     if (!MODEL_TIERS.includes(entry.tier)) throw new RoutingError(`${entry.id} requires tier ${MODEL_TIERS.join('|')}`, 'INVALID_REGISTRY');
     if (entry.eligible !== undefined && typeof entry.eligible !== 'boolean') throw new RoutingError(`${entry.id} eligible must be boolean`, 'INVALID_REGISTRY');
     if (entry.prohibited !== undefined && typeof entry.prohibited !== 'boolean') throw new RoutingError(`${entry.id} prohibited must be boolean`, 'INVALID_REGISTRY');
-    if (seen.has(entry.id)) throw new RoutingError(`Duplicate model id ${entry.id}`, 'INVALID_REGISTRY');
-    seen.add(entry.id);
-    return {
+    if (entry.connectionId !== undefined && (typeof entry.connectionId !== 'string' || !entry.connectionId.trim())) throw new RoutingError(`${entry.id} connectionId must be a non-empty string`, 'INVALID_REGISTRY');
+    if (entry.paid !== undefined && typeof entry.paid !== 'boolean') throw new RoutingError(`${entry.id} paid must be boolean`, 'INVALID_REGISTRY');
+    if (entry.endpoint !== undefined && (typeof entry.endpoint !== 'string' || !entry.endpoint.trim())) throw new RoutingError(`${entry.id} endpoint must be a non-empty string`, 'INVALID_REGISTRY');
+    if (entry.paid) {
+      let endpoint;
+      try { endpoint = new URL(entry.endpoint); } catch { throw new RoutingError(`${entry.id} paid endpoint must be an absolute HTTP(S) URL`, 'INVALID_REGISTRY'); }
+      if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new RoutingError(`${entry.id} paid endpoint must not contain credentials, query, or fragment`, 'INVALID_REGISTRY');
+    }
+    const identities = seen.get(entry.id) ?? [];
+    if (identities.length && (!entry.connectionId || identities.includes(undefined) || identities.includes(entry.connectionId))) throw new RoutingError(`Duplicate/ambiguous model id ${entry.id} requires distinct explicit connection identities`, 'INVALID_REGISTRY');
+    identities.push(entry.connectionId);
+    seen.set(entry.id, identities);
+    const normalized = {
       id: entry.id,
       provider: entry.provider,
       tier: entry.tier,
@@ -50,6 +60,10 @@ export function normalizeModelRegistry(registry) {
       eligible: entry.eligible !== false,
       prohibited: entry.prohibited === true,
     };
+    if (entry.connectionId !== undefined) normalized.connectionId = entry.connectionId;
+    if (entry.paid === true) normalized.paid = true;
+    if (entry.endpoint !== undefined) normalized.endpoint = entry.endpoint;
+    return normalized;
   });
 }
 
@@ -57,12 +71,13 @@ export function normalizeModelRegistry(registry) {
  * Pure per-action model router.
  *
  * input (all Host-computed, never a Worker self-report):
- *   - provider: restrict to the already-selected Worker's provider
+ *   - provider: native transport (legacy catalog scope)
+ *   - connectionId: exact Host connection/account identity
  *   - role, capabilities
  *   - risk: 'normal' | 'high'
  *   - escalate: true after consecutive/escalated failures
  *   - security: true when the selected independent reviewer needs security capability
- *   - unavailable: provider ids or model ids the Host currently quarantines
+ *   - unavailable: connection ids or model identities the Host currently quarantines
  *
  * Returns { selectedModel, provider, tier, reason, inputs }. Throws RoutingError
  * (fail closed) when no eligible model satisfies the requirement.
@@ -77,9 +92,15 @@ export function routeModel(input = {}, registry) {
   const acceptable = new Set(ACCEPTABLE_TIERS[requiredTier]);
   const unavailable = new Set(input.unavailable ?? []);
   const provider = typeof input.provider === 'string' && input.provider ? input.provider : undefined;
+  const connectionId = typeof input.connectionId === 'string' && input.connectionId ? input.connectionId : undefined;
   const candidates = catalog.filter(model => model.eligible && !model.prohibited && acceptable.has(model.tier)
     && (provider === undefined || model.provider === provider)
-    && !unavailable.has(model.provider) && !unavailable.has(model.id));
+    && (model.connectionId === undefined || connectionId === undefined || model.connectionId === connectionId)
+    && (model.connectionId !== undefined || !unavailable.has(model.provider))
+    && !unavailable.has(model.connectionId ?? model.provider)
+    && !unavailable.has(model.id)
+    && (!connectionId || !unavailable.has(`${connectionId}::${model.id}`))
+    && !unavailable.has(`${model.connectionId ?? model.provider}::${model.id}`));
   if (!candidates.length) throw new RoutingError(`No eligible ${requiredTier}-tier model${provider ? ` for provider ${provider}` : ''} in the Host registry`, 'NO_ELIGIBLE_MODEL');
   candidates.sort((a, b) => (a.tier === requiredTier ? 0 : 1) - (b.tier === requiredTier ? 0 : 1) || a.cost - b.cost || a.id.localeCompare(b.id));
   const chosen = candidates[0];
@@ -87,13 +108,20 @@ export function routeModel(input = {}, registry) {
     : escalate ? 'consecutive/escalated failure routed to an eligible higher-tier model'
       : risk === 'high' ? 'high-risk action routed to an eligible higher-tier model'
         : 'routine action routed to the routine-tier default';
-  return {
+  const result = {
     selectedModel: chosen.id,
     provider: chosen.provider,
     tier: chosen.tier,
     reason,
     inputs: { role, risk, escalate, security, requiredTier, provider: provider ?? null },
   };
+  if (chosen.connectionId !== undefined || connectionId !== undefined) {
+    result.connectionId = chosen.connectionId ?? connectionId;
+    result.inputs.connectionId = connectionId ?? null;
+  }
+  if (chosen.paid === true) result.paid = true;
+  if (chosen.endpoint !== undefined) result.endpoint = chosen.endpoint;
+  return result;
 }
 
 /**

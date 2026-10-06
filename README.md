@@ -71,7 +71,47 @@ Windows 建议配置原生 `.exe` 的绝对路径，或 `executable: "node"` 加
 - `node scripts/watchdog.mjs recovery-config.json` 是独立于 DSH 启动的最小恢复入口。
   必须配置 `harness.executable/args` 和 `recovery.enabled/repository/codex/tests/protectedPaths`。
   独立 Codex 修复、Host 测试、另一只读 Codex 审核后，才允许从候选 worktree 重启；
-   `recovery.restartFromWorktree` 默认关闭。
+  `recovery.restartFromWorktree` 默认关闭。
+
+## 独立连接与付费 API 授权
+
+`agents` 的键是 Host 连接别名；`transport` 选择原生适配器（如 `opencode`），
+`connectionId` 是 Host 声明的具体登录/计费连接身份，`quotaGroup` 只用于确实共用账户额度的连接。
+Runtime 不会探测或伪造供应商账户余额；运维者须确保每个 alias 实际使用预期登录，
+必要时为原生 CLI 配置隔离的外部账户配置目录/环境。
+没有显式 `quotaGroup` 时，OpenCode Go、另一份 OpenCode 登录和直接 API 连接按独立连接路由。
+模型表的 `provider` 是原生 transport，`connectionId` 是该模型所属账户；同一 API 模型 ID
+可在不同明确命名的连接上重复。旧的 provider-key 配置和不含 `connectionId` 的模型表继续兼容。
+CLI 会把 alias 映射为 Worker ID，并按 `transport` 构造 adapter。
+
+DeepSeek V4.1 Flash (`deepseek-flash`) 和 GLM 5.3 Flash (`glm-5.3-flash`)
+是 OpenCode 的独立 custom-provider 连接。`config.example.json` 将两者设为
+`enabled: false`、模型 `eligible: false`，并通过 `DEEPSEEK_API_KEY` / `GLM_API_KEY`
+环境变量名引用凭证；示例不包含真实 key。将 API key 放进连接配置、模型提示或仓库配置
+不会授予花费权限。启用连接和模型后，还须在 Host 终端明确授权，例：
+
+```sh
+# 项目 stateDir 必须在仓库外；审批将绑定精确项目、连接、模型、endpoint 和到期时间。
+node scripts/paid-api-authorization.mjs --state-dir ../dsh-state/example --grant \
+  --project D:/projects/example --connection deepseek-api --models deepseek-flash \
+  --endpoint https://api.deepseek.com --expires 2026-10-20T12:00:00Z --max-worker-runs 3
+# 按提示输入 APPROVE deepseek-api。撤销时：
+node scripts/paid-api-authorization.mjs --state-dir ../dsh-state/example --revoke <grant-id>
+```
+
+授权账本在 `stateDir/paid-api/ledger.json`，不在 Worker workspace；Host 会在准备 adapter
+之前原子预留一次 Worker run，并在崩溃、启动失败、重启和并发启动时保留消耗记录。超出模型、
+连接、endpoint、项目、到期时间或额度范围的启动会在任何 Worker 准备/网络请求之前失败，
+并报告明确的 authorization-needed 原因。配置可为 DeepSeek 与 GLM 分别创建独立 grant。
+`maxWorkerRuns` 只限制已授权的 Worker 启动次数，不限制一个 Worker 发出的 API 请求数量、
+token 数或货币金额；它不是 monetary spending cap，也不保证费用上限。没有活跃授权的
+付费连接会从可选 Worker 和付费模型中排除，让已授权的既有订阅连接继续参与选择。
+该授权入口是本地 Host 操作，不提供 Agent 工具或 HTTP grant endpoint。
+
+自定义 provider 只向 `OPENCODE_CONFIG_CONTENT` 加入 OpenCode 的 provider/npm/baseURL/model
+设置；权限、MCP、插件和 Worker 工具围栏由 Host 固定生成。OpenCode custom provider 使用
+`@ai-sdk/openai-compatible`。启用 API 连接时，先设置对应环境变量并安装/配置 OpenCode CLI；
+Node.js 22+、Git、启用的原生 CLI 和各自订阅登录仍是本机外部依赖。
 
 ## 外部 Controller Supervisor
 
