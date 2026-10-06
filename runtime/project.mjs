@@ -337,7 +337,7 @@ export class ProjectRuntime extends EventEmitter {
         error.failureKind = 'authorization-needed';
         throw error;
       }
-      run = await agent.start({ ...task, model: routing?.selectedModel ?? task.model, paidApiAuthorization, runKey, artifactDir, permissions: policyFor(task.role, this.state.permissions), timeoutMs: this.config.agentTimeoutMs ?? 300_000, signal: abort.signal, onEvent: event => {
+      run = await agent.start({ ...task, model: routing?.selectedModel ?? task.model, project: this.repository, paidApiAuthorization, runKey, artifactDir, permissions: policyFor(task.role, this.state.permissions), timeoutMs: this.config.agentTimeoutMs ?? 300_000, signal: abort.signal, onEvent: event => {
         if (event.type === 'run-started') Object.assign(launchIntent, event, { role: task.role, actionId: task.actionId });
         this.emit('run', event);
       } });

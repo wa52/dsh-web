@@ -150,13 +150,22 @@ node scripts/paid-api-authorization.mjs --state-dir ../dsh-state/example --grant
 只有明确键入 `APPROVE deepseek-api` 才写入授权账本；另一个 grant 可只准许
 `glm-5.3-flash` 和其 endpoint。撤销使用同一命令加 `--revoke <grant-id>` 并键入确认。
 账本保存在仓库/workspace 外的 `stateDir/paid-api/ledger.json`。Host 在 adapter 准备前
-校验并原子预留 run；并发调用不会超出 `maxWorkerRuns`，预留在崩溃、spawn 失败和重启后
-不退还。越界、过期、撤销、用尽或 scope 不匹配会 fail closed；未经授权的 paid 模型会被
+校验并原子预留 run；独立进程并发调用不会超出 `maxWorkerRuns`，预留在崩溃、spawn 失败和重启后
+不退还。capability 同时绑定项目、连接、模型、endpoint 和 run。越界、过期、撤销、用尽或 scope 不匹配会 fail closed；未经授权的 paid 模型会被
 跳过，选择其余有资格的已授权订阅连接，否则返回持久的 authorization-needed 阻塞原因。
 
 `maxWorkerRuns` 只限制 Worker 启动数，不限制每个 Worker 的 API 请求、token 或货币开销；
 一次 Worker run 可以发起多次请求，因此它不是 API 费用预算或货币支出上限。示例默认
-`enabled: false`、`eligible: false`，无需设置新 API key，也不会触发实际付费调用。
+`enabled: false`、`eligible: false`，官方 DSH 连接也默认禁用，无需设置新 API key，
+也不会触发实际付费调用。
+
+#### 锁崩溃后的人工恢复
+
+`stateDir/paid-api/ledger.lock` 出现后，进程不会因 owner PID 不存在、锁龄过长或 owner 文件
+损坏而自动删除它；自动回收在并发恢复时会产生 ABA 竞态。等待超时会明确提示锁路径，且不会
+修改授权账本。操作者须先停止并确认**所有**共享该 `stateDir` 的控制器已退出，然后仅删除
+`paid-api/ledger.lock` 目录，再重启 Runtime。不得删除账本、减少 `consumedWorkerRuns` 或
+尝试在仍有控制器运行时解除锁。进程若在创建锁和写入 owner 文件之间崩溃，也按同一流程处理。
 
 ### 失败分类与额度交接
 

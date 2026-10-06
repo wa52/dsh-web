@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { atomicJson } from './store.mjs';
 
@@ -22,36 +22,35 @@ async function acquire(stateDir) {
   const owner = { pid: process.pid, token: randomUUID(), createdAt: Date.now() };
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
+    let created = false;
     try {
       await mkdir(lock);
-      await atomicJson(path.join(lock, 'owner.json'), owner);
-      return async () => {
-        try {
-          const held = JSON.parse(await readFile(path.join(lock, 'owner.json'), 'utf8'));
-          if (held.token === owner.token) await rm(lock, { recursive: true, force: true });
-        } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      };
+      created = true;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      try {
-        const ownerFile = path.join(lock, 'owner.json');
-        const current = JSON.parse(await readFile(ownerFile, 'utf8'));
-        let alive = true;
-        try { process.kill(current.pid, 0); } catch (probe) { alive = probe.code !== 'ESRCH'; }
-        if (!alive) {
-          const info = await stat(lock);
-          const verifiedOwner = JSON.parse(await readFile(ownerFile, 'utf8'));
-          if (info.ino === (await stat(lock)).ino && verifiedOwner.token === current.token) await rm(lock, { recursive: true, force: true });
-        }
-      } catch (readError) {
-        if (readError.code !== 'ENOENT' && !(readError instanceof SyntaxError)) throw readError;
-        const info = await stat(lock).catch(() => null);
-        if (info && Date.now() - info.mtimeMs > 5000) await rm(lock, { recursive: true, force: true });
-      }
       await new Promise(resolve => setTimeout(resolve, 20));
+      continue;
     }
+    if (!created) continue;
+    // A crash while publishing owner.json intentionally leaves an incomplete
+    // lock. Never infer that a lock is safe to steal from PID, age, inode or
+    // token observations: another process may have replaced it after a check.
+    try { await atomicJson(path.join(lock, 'owner.json'), owner); }
+    catch (error) {
+      throw new Error(`Could not initialize paid API ledger lock at ${lock}; it was left in place and requires operator recovery after all controllers stop: ${error.message}`, { cause: error });
+    }
+    return async () => {
+      try {
+        const held = JSON.parse(await readFile(path.join(lock, 'owner.json'), 'utf8'));
+        if (held.token === owner.token) {
+          // No recovery process removes locks automatically. Operator recovery
+          // is permitted only while all controller processes are stopped.
+          await rm(lock, { recursive: true, force: true });
+        }
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    };
   }
-  throw new Error('Timed out waiting for paid API authorization ledger lock');
+  throw new Error(`Timed out waiting for paid API authorization ledger lock at ${lock}. It may be stale or incomplete; stop every controller sharing this state directory, then follow the documented operator recovery procedure. The lock was not removed.`);
 }
 
 async function updateLedger(stateDir, change) {
@@ -138,9 +137,12 @@ export async function reservePaidApiRun({ stateDir, connectionId, modelId, endpo
   return token;
 }
 
-function validateReservation(token, { connectionId, modelId, endpoint, runId }) {
+function validateReservation(token, { connectionId, modelId, endpoint, project, runId } = {}) {
   const reservation = token && capabilities.get(token);
-  if (!reservation || reservation.connectionId !== connectionId || reservation.modelId !== modelId || reservation.endpoint !== cleanEndpoint(endpoint) || reservation.runId !== runId) {
+  const sameProject = typeof project === 'string' && project.length > 0 && reservation?.projectKey === projectKey(project);
+  if (!reservation || reservation.connectionId !== connectionId || reservation.modelId !== modelId
+    || reservation.endpoint !== cleanEndpoint(endpoint) || !sameProject
+    || reservation.runId !== runId) {
     const error = new Error(`Paid API authorization needed for connection ${connectionId}, model ${modelId}`);
     error.failureKind = 'authorization-needed';
     throw error;

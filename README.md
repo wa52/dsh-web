@@ -99,6 +99,9 @@ node scripts/paid-api-authorization.mjs --state-dir ../dsh-state/example --grant
 node scripts/paid-api-authorization.mjs --state-dir ../dsh-state/example --revoke <grant-id>
 ```
 
+示例中的官方 DSH 连接也默认 `enabled: false`，相应模型为 `eligible: false`；这样默认配置
+不会隐式启动可能计费的官方连接。已有订阅连接仍可按各自登录和配置使用。
+
 授权账本在 `stateDir/paid-api/ledger.json`，不在 Worker workspace；Host 会在准备 adapter
 之前原子预留一次 Worker run，并在崩溃、启动失败、重启和并发启动时保留消耗记录。超出模型、
 连接、endpoint、项目、到期时间或额度范围的启动会在任何 Worker 准备/网络请求之前失败，
@@ -107,6 +110,19 @@ node scripts/paid-api-authorization.mjs --state-dir ../dsh-state/example --revok
 token 数或货币金额；它不是 monetary spending cap，也不保证费用上限。没有活跃授权的
 付费连接会从可选 Worker 和付费模型中排除，让已授权的既有订阅连接继续参与选择。
 该授权入口是本地 Host 操作，不提供 Agent 工具或 HTTP grant endpoint。
+
+### 账本锁的崩溃恢复
+
+`stateDir/paid-api/ledger.lock` 是刻意 fail-closed 的互斥锁。若控制器在持锁时崩溃，
+后续操作会等待后报错；Runtime 不根据 PID、锁龄或 owner token 自动删除锁，因为这种
+恢复方式存在 ABA 竞态并可能让并发预留超过授权次数。恢复前必须停止并确认所有共享该
+`stateDir` 的 DSH/Runtime 控制器都已退出，再人工删除**锁目录** `paid-api/ledger.lock`。
+不要删除或重建 `ledger.json`，也不要减少已消费的 `consumedWorkerRuns`；已预留次数不会
+因崩溃或启动失败退还。锁 owner 文件缺失/损坏时同样按 stale lock 处理。Windows PowerShell：
+
+```powershell
+Remove-Item -LiteralPath "<stateDir>\paid-api\ledger.lock" -Recurse -Force
+```
 
 自定义 provider 只向 `OPENCODE_CONFIG_CONTENT` 加入 OpenCode 的 provider/npm/baseURL/model
 设置；权限、MCP、插件和 Worker 工具围栏由 Host 固定生成。OpenCode custom provider 使用

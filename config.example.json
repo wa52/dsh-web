@@ -20,9 +20,9 @@
     { "id": "codex/gpt-5-security", "provider": "codex", "connectionId": "codex", "tier": "security", "cost": 4 },
     { "id": "pi/deepseek-v4.1-flash", "provider": "pi", "connectionId": "pi", "tier": "routine", "cost": 1 },
     { "id": "pi/deepseek-v4.1", "provider": "pi", "connectionId": "pi", "tier": "deep", "cost": 3 },
-    { "id": "deepseek-v4-flash", "provider": "dsh", "connectionId": "dsh", "tier": "routine", "cost": 1 },
-    { "id": "deepseek-v4.1", "provider": "dsh", "connectionId": "dsh", "tier": "deep", "cost": 3 },
-    { "id": "deepseek-security", "provider": "dsh", "connectionId": "dsh", "tier": "security", "cost": 3 },
+    { "id": "deepseek-v4-flash", "provider": "dsh", "connectionId": "dsh", "tier": "routine", "cost": 1, "eligible": false },
+    { "id": "deepseek-v4.1", "provider": "dsh", "connectionId": "dsh", "tier": "deep", "cost": 3, "eligible": false },
+    { "id": "deepseek-security", "provider": "dsh", "connectionId": "dsh", "tier": "security", "cost": 3, "eligible": false },
     { "id": "account-model-placeholder", "provider": "opencode", "connectionId": "opencode-subscription", "tier": "routine", "eligible": false },
     { "id": "deepseek-flash", "provider": "opencode", "connectionId": "deepseek-api", "tier": "routine", "paid": true, "endpoint": "https://api.deepseek.com", "eligible": false },
     { "id": "glm-5.3-flash", "provider": "opencode", "connectionId": "glm-api", "tier": "routine", "paid": true, "endpoint": "https://api.z.ai/api/paas/v4", "eligible": false }
@@ -32,7 +32,7 @@
     "opencodeGo": { "transport": "opencode", "connectionId": "opencode-go", "executable": "opencode", "capabilities": ["code", "debug", "ui", "review", "security", "reason"] },
     "opencodeSubscription": { "transport": "opencode", "connectionId": "opencode-subscription", "executable": "opencode", "accountId": "independent-subscription-login", "model": "account-model-placeholder", "capabilities": ["code", "debug", "ui", "review", "reason"] },
     "pi": { "transport": "pi", "connectionId": "pi", "executable": "pi", "quotaGroup": "codex-account", "capabilities": ["code", "debug", "ui", "review", "reason"] },
-    "dsh": { "transport": "dsh", "connectionId": "dsh", "provider": "deepseek-official", "model": "deepseek-v4-flash", "capabilities": ["code", "debug", "ui", "review", "reason"] },
+    "dsh": { "enabled": false, "transport": "dsh", "connectionId": "dsh", "provider": "deepseek-official", "model": "deepseek-v4-flash", "capabilities": ["code", "debug", "ui", "review", "reason"] },
     "deepseekApi": { "enabled": false, "transport": "opencode", "connectionId": "deepseek-api", "executable": "opencode", "model": "deepseek-flash", "paidApi": { "endpoint": "https://api.deepseek.com" }, "openCodeProvider": { "id": "deepseek-paid", "name": "DeepSeek V4.1 Flash (Paid API)", "baseURL": "https://api.deepseek.com", "apiKeyEnv": "DEEPSEEK_API_KEY", "modelName": "DeepSeek V4.1 Flash" }, "capabilities": ["code", "debug", "ui", "review", "reason"] },
     "glmApi": { "enabled": false, "transport": "opencode", "connectionId": "glm-api", "executable": "opencode", "model": "glm-5.3-flash", "paidApi": { "endpoint": "https://api.z.ai/api/paas/v4" }, "openCodeProvider": { "id": "glm-paid", "name": "GLM 5.3 Flash (Paid API)", "baseURL": "https://api.z.ai/api/paas/v4", "apiKeyEnv": "GLM_API_KEY", "modelName": "GLM 5.3 Flash" }, "capabilities": ["code", "debug", "ui", "review", "reason"] }
   }

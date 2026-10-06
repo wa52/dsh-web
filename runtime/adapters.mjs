@@ -176,7 +176,7 @@ export function createAgentAdapter(provider, config = {}) {
     if (!adapter.enabled) throw Object.assign(new Error(`Connection ${adapter.id} is disabled in Host configuration`), { failureKind: 'authorization-needed' });
     if (adapter.paidApi) {
       assertPaidApiRunAuthorization(task.paidApiAuthorization, {
-        connectionId: adapter.connectionId, modelId: task.model ?? adapter.model, endpoint: adapter.paidApi.endpoint, runId: task.runKey,
+        connectionId: adapter.connectionId, modelId: task.model ?? adapter.model, endpoint: adapter.paidApi.endpoint, project: task.project, runId: task.runKey,
       });
     }
     const run = await start(task); adapter.handles.set(run.id, run);
