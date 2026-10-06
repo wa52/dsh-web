@@ -34,7 +34,8 @@ export function normalizeModelRegistry(registry) {
   const models = Array.isArray(registry) ? registry : registry?.models;
   if (!Array.isArray(models) || !models.length) throw new RoutingError('Host model registry is empty', 'EMPTY_REGISTRY');
   const seen = new Map();
-  return models.map(entry => {
+  const identities = new Map();
+  const normalized = models.map(entry => {
     if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || !entry.id.trim()) throw new RoutingError('Model registry entry requires a string id', 'INVALID_REGISTRY');
     if (typeof entry.provider !== 'string' || !entry.provider.trim()) throw new RoutingError(`${entry.id} requires a provider`, 'INVALID_REGISTRY');
     if (!MODEL_TIERS.includes(entry.tier)) throw new RoutingError(`${entry.id} requires tier ${MODEL_TIERS.join('|')}`, 'INVALID_REGISTRY');
@@ -48,10 +49,13 @@ export function normalizeModelRegistry(registry) {
       try { endpoint = new URL(entry.endpoint); } catch { throw new RoutingError(`${entry.id} paid endpoint must be an absolute HTTP(S) URL`, 'INVALID_REGISTRY'); }
       if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new RoutingError(`${entry.id} paid endpoint must not contain credentials, query, or fragment`, 'INVALID_REGISTRY');
     }
-    const identities = seen.get(entry.id) ?? [];
-    if (identities.length && (!entry.connectionId || identities.includes(undefined) || identities.includes(entry.connectionId))) throw new RoutingError(`Duplicate/ambiguous model id ${entry.id} requires distinct explicit connection identities`, 'INVALID_REGISTRY');
-    identities.push(entry.connectionId);
-    seen.set(entry.id, identities);
+    const list = seen.get(entry.id) ?? [];
+    if (list.length && (!entry.connectionId || list.includes(undefined) || list.includes(entry.connectionId))) throw new RoutingError(`Duplicate/ambiguous model id ${entry.id} requires distinct explicit connection identities`, 'INVALID_REGISTRY');
+    list.push(entry.connectionId);
+    seen.set(entry.id, list);
+    const connSet = identities.get(entry.id) ?? new Set();
+    if (entry.connectionId !== undefined) connSet.add(entry.connectionId);
+    identities.set(entry.id, connSet);
     const normalized = {
       id: entry.id,
       provider: entry.provider,
@@ -65,6 +69,8 @@ export function normalizeModelRegistry(registry) {
     if (entry.endpoint !== undefined) normalized.endpoint = entry.endpoint;
     return normalized;
   });
+  normalized.ambiguousIds = new Set([...identities.entries()].filter(([, set]) => set.size > 1).map(([id]) => id));
+  return normalized;
 }
 
 /**
@@ -93,14 +99,18 @@ export function routeModel(input = {}, registry) {
   const unavailable = new Set(input.unavailable ?? []);
   const provider = typeof input.provider === 'string' && input.provider ? input.provider : undefined;
   const connectionId = typeof input.connectionId === 'string' && input.connectionId ? input.connectionId : undefined;
-  const candidates = catalog.filter(model => model.eligible && !model.prohibited && acceptable.has(model.tier)
-    && (provider === undefined || model.provider === provider)
-    && (model.connectionId === undefined || connectionId === undefined || model.connectionId === connectionId)
-    && (model.connectionId !== undefined || !unavailable.has(model.provider))
-    && !unavailable.has(model.connectionId ?? model.provider)
-    && !unavailable.has(model.id)
-    && (!connectionId || !unavailable.has(`${connectionId}::${model.id}`))
-    && !unavailable.has(`${model.connectionId ?? model.provider}::${model.id}`));
+  const ambiguousIds = catalog.ambiguousIds ?? new Set();
+  const candidates = catalog.filter(model => {
+    if (!model.eligible || model.prohibited || !acceptable.has(model.tier)) return false;
+    if (provider !== undefined && model.provider !== provider) return false;
+    if (model.connectionId !== undefined && connectionId !== undefined && model.connectionId !== connectionId) return false;
+    const modelConnection = model.connectionId ?? model.provider;
+    if (unavailable.has(modelConnection)) return false;
+    if (unavailable.has(`${modelConnection}::${model.id}`)) return false;
+    if (connectionId !== undefined && unavailable.has(`${connectionId}::${model.id}`)) return false;
+    if (!ambiguousIds.has(model.id) && unavailable.has(model.id)) return false;
+    return true;
+  });
   if (!candidates.length) throw new RoutingError(`No eligible ${requiredTier}-tier model${provider ? ` for provider ${provider}` : ''} in the Host registry`, 'NO_ELIGIBLE_MODEL');
   candidates.sort((a, b) => (a.tier === requiredTier ? 0 : 1) - (b.tier === requiredTier ? 0 : 1) || a.cost - b.cost || a.id.localeCompare(b.id));
   const chosen = candidates[0];

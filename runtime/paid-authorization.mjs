@@ -138,17 +138,22 @@ export async function reservePaidApiRun({ stateDir, connectionId, modelId, endpo
   return token;
 }
 
-export function assertPaidApiRunAuthorization(token, { connectionId, modelId, endpoint, runId }) {
+function validateReservation(token, { connectionId, modelId, endpoint, runId }) {
   const reservation = token && capabilities.get(token);
   if (!reservation || reservation.connectionId !== connectionId || reservation.modelId !== modelId || reservation.endpoint !== cleanEndpoint(endpoint) || reservation.runId !== runId) {
     const error = new Error(`Paid API authorization needed for connection ${connectionId}, model ${modelId}`);
     error.failureKind = 'authorization-needed';
     throw error;
   }
+  return reservation;
+}
+
+export function assertPaidApiRunAuthorization(token, scope) {
+  const reservation = validateReservation(token, scope);
   capabilities.delete(token);
   return reservation;
 }
 
 export function hasPaidApiRunAuthorization(token, scope) {
-  try { assertPaidApiRunAuthorization(token, scope); return true; } catch { return false; }
+  try { validateReservation(token, scope); return true; } catch { return false; }
 }

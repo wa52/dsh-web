@@ -247,9 +247,16 @@ export class ProjectRuntime extends EventEmitter {
         }
         const snapshot = await this.worktrees.snapshot(task.workspace);
         const attempt = attempted.length;
-        const failedModel = attemptRouting?.selectedModel ? `${attemptRouting.connectionId ?? agent.connectionId ?? agent.id}::${attemptRouting.selectedModel}` : undefined;
-        const failedModels = [...new Set([...(task.unavailableModels ?? []), ...(failedModel ? [failedModel] : [])])];
-        handoff = { id: randomUUID(), from: agent.id, to: null, attempt, role: task.role, actionId: task.actionId, workspace: task.workspace, snapshotHash: snapshot.hash, error: safeError(error), failureKind, finishReason: error.finishReason, usage: error.usage, failedModel: attemptRouting?.selectedModel, failureRouting: attemptRouting, unavailableModels: failedModels, at: new Date().toISOString(), status: 'waiting' };
+        const failedModels = new Set([...(task.unavailableModels ?? [])]);
+        if (attemptRouting?.selectedModel) {
+          const catalog = this.modelCatalog() ? normalizeModelRegistry(this.modelCatalog()) : [];
+          const ambiguousIds = catalog.ambiguousIds ?? new Set();
+          const explicitConnectionId = attemptRouting.connectionId ?? agent.connectionId;
+          if (!ambiguousIds.has(attemptRouting.selectedModel)) failedModels.add(attemptRouting.selectedModel);
+          if (explicitConnectionId) failedModels.add(`${explicitConnectionId}::${attemptRouting.selectedModel}`);
+        }
+        const failedModelsList = [...failedModels];
+        handoff = { id: randomUUID(), from: agent.id, to: null, attempt, role: task.role, actionId: task.actionId, workspace: task.workspace, snapshotHash: snapshot.hash, error: safeError(error), failureKind, finishReason: error.finishReason, usage: error.usage, failedModel: attemptRouting?.selectedModel, failureRouting: attemptRouting, unavailableModels: failedModelsList, at: new Date().toISOString(), status: 'waiting' };
         this.state.handoffs ??= []; this.state.handoffs.push(handoff);
         await atomicJson(path.join(this.store.directory, 'evidence', handoff.id, 'checkpoint.json'), { ...handoff, snapshot, goal: this.state.goal, prompt: task.prompt, latestAlignment: this.lastAlignment?.text });
         await this.checkpoint();
