@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { routeModel, unavailableAgentIds, RoutingError } from '../runtime/routing.mjs';
 import { createAgentAdapter } from '../runtime/adapters.mjs';
 import { ProjectRuntime } from '../runtime/project.mjs';
+import { killTree } from '../runtime/process.mjs';
 import { createCheckoutFixture } from '../scripts/fixture.mjs';
 import { createPaidApiGrant, revokePaidApiGrant, reservePaidApiRun, eligiblePaidConnections, assertPaidApiRunAuthorization, hasPaidApiRunAuthorization } from '../runtime/paid-authorization.mjs';
 
@@ -229,7 +230,7 @@ test('a crashed lock owner is never auto-recovered and cannot overspend the gran
     assert.equal(attempt.child.exitCode, null, 'the second process must wait rather than steal a stale owner lock');
     assert.deepEqual(attempt.output(), { stdout: '', stderr: '' });
   } finally {
-    attempt.child.kill();
+    await killTree(attempt.child);
     await attempt.closed;
   }
   assert.equal((await readFile(path.join(lock, 'owner.json'), 'utf8')).includes('crashed-owner'), true, 'stale lock owner must be preserved for explicit operator recovery');

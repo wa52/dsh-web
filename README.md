@@ -200,6 +200,7 @@ node scripts/live-workers.mjs config.local.json
 npm run test:live -- config.local.json
 node scripts/live-recovery.mjs config.local.json
 node scripts/live-new-project.mjs config.local.json
+node scripts/check-paid-lock-race.mjs  # deterministic local probe for paid-API lock ABA race
 ```
 
 自动测试包含明确标注的 test-double 决策，用于确定性验证 Gate、回归拒审、worktree、重启和恢复。

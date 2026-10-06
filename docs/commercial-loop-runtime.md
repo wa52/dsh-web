@@ -166,6 +166,8 @@ node scripts/paid-api-authorization.mjs --state-dir ../dsh-state/example --grant
 修改授权账本。操作者须先停止并确认**所有**共享该 `stateDir` 的控制器已退出，然后仅删除
 `paid-api/ledger.lock` 目录，再重启 Runtime。不得删除账本、减少 `consumedWorkerRuns` 或
 尝试在仍有控制器运行时解除锁。进程若在创建锁和写入 owner 文件之间崩溃，也按同一流程处理。
+可用 `node scripts/check-paid-lock-race.mjs` 在本地固定装置上验证并发预留不会超出授权次数；
+该脚本不发起真实付费调用。
 
 ### 失败分类与额度交接
 

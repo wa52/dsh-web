@@ -163,7 +163,7 @@ async function cliSpec(provider, config, task) {
 }
 
 export function createAgentAdapter(provider, config = {}) {
-  if (config.paidApi && (provider !== 'opencode' || !config.openCodeProvider || config.paidApi.endpoint !== config.openCodeProvider.baseURL)) throw new Error('Paid API connections require the OpenCode custom provider endpoint to match paidApi.endpoint exactly');
+  if (config.paidApi && (provider !== 'opencode' || !config.openCodeProvider || config.paidApi.endpoint?.replace(/\/$/, '') !== config.openCodeProvider.baseURL?.replace(/\/$/, ''))) throw new Error('Paid API connections require the OpenCode custom provider endpoint to match paidApi.endpoint exactly');
   const adapter = new ProcessAdapter({ id: config.id ?? provider, identity: config.identity ?? randomUUID(), provider, connectionId: config.connectionId ?? config.id ?? provider, accountId: config.accountId, enabled: config.enabled !== false, roles: config.roles ?? ['build', 'review', 'decide', 'recovery'], capabilities: config.capabilities ?? ['code', 'debug', 'ui', 'review', 'reason'], trust: config.trust ?? (provider === 'codex' ? 0.95 : 0.75), cost: config.cost ?? 1, permissions: config.permissions, model: config.model, quotaGroup: config.quotaGroup, paidApi: config.paidApi, openCodeProvider: config.openCodeProvider }, async task => {
     const spec = await cliSpec(provider, config, task);
     spec.args = [...(config.argsPrefix ?? []), ...spec.args];

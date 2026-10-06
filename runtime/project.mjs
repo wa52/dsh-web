@@ -81,9 +81,10 @@ export class ProjectRuntime extends EventEmitter {
     for (const agent of this.registry.agents.values()) {
       if (!agent.paidApi?.endpoint) continue;
       const connectionId = agent.connectionId ?? agent.id;
+      const paidEndpoint = agent.paidApi.endpoint.replace(/\/$/, '');
       const candidates = this.config.autoModelRouting === false || !models.length
-        ? [agent.model].filter(Boolean).map(modelId => ({ id: modelId, paid: true, eligible: true, endpoint: agent.paidApi.endpoint, connectionId }))
-        : models.filter(model => model.paid && model.eligible && model.connectionId === connectionId && model.endpoint === agent.paidApi.endpoint);
+        ? [agent.model].filter(Boolean).map(modelId => ({ id: modelId, paid: true, eligible: true, endpoint: paidEndpoint, connectionId }))
+        : models.filter(model => model.paid && model.eligible && model.connectionId === connectionId && model.endpoint.replace(/\/$/, '') === paidEndpoint);
       for (const model of candidates) requirements.push({ connectionId, modelId: model.id, endpoint: model.endpoint });
     }
     this.paidModelEligibility = new Set(await eligiblePaidConnections({ stateDir: this.store.directory, project: this.repository, requirements }));
@@ -138,16 +139,20 @@ export class ProjectRuntime extends EventEmitter {
     }
     for (const agent of this.registry.agents.values()) {
       if (!agent.paidApi) continue;
-      if (!agent.paidApi.endpoint || agent.openCodeProvider?.baseURL !== agent.paidApi.endpoint) throw new RoutingError(`Paid connection ${agent.connectionId ?? agent.id} requires a matching custom-provider endpoint`, 'INVALID_REGISTRY');
+      const paidEndpoint = agent.paidApi.endpoint?.replace(/\/$/, '');
+      if (!paidEndpoint || agent.openCodeProvider?.baseURL.replace(/\/$/, '') !== paidEndpoint) throw new RoutingError(`Paid connection ${agent.connectionId ?? agent.id} requires a matching custom-provider endpoint`, 'INVALID_REGISTRY');
       if (agent.model) {
         const staticModel = models.find(model => model.id === agent.model && model.connectionId === (agent.connectionId ?? agent.id ?? agent.provider));
-        if (!staticModel?.paid || staticModel.endpoint !== agent.paidApi.endpoint) throw new RoutingError(`Paid connection ${agent.connectionId ?? agent.id} static model ${agent.model} must be explicitly marked paid at its exact endpoint`, 'INVALID_REGISTRY');
+        if (!staticModel?.paid || staticModel.endpoint.replace(/\/$/, '') !== paidEndpoint) throw new RoutingError(`Paid connection ${agent.connectionId ?? agent.id} static model ${agent.model} must be explicitly marked paid at its exact endpoint`, 'INVALID_REGISTRY');
       }
     }
     for (const model of models) {
       if (model.paid && (!model.connectionId || !model.endpoint)) throw new RoutingError(`Paid model ${model.id} requires exact connectionId and endpoint metadata`, 'INVALID_REGISTRY');
       if (model.connectionId && ![...this.registry.agents.values()].some(agent => (agent.connectionId ?? agent.id ?? agent.provider) === model.connectionId)) throw new RoutingError(`Model ${model.id} references unknown connection ${model.connectionId}`, 'INVALID_REGISTRY');
-      if (model.paid && ![...this.registry.agents.values()].some(agent => (agent.connectionId ?? agent.id ?? agent.provider) === model.connectionId && agent.paidApi?.endpoint === model.endpoint && agent.openCodeProvider?.baseURL === model.endpoint)) throw new RoutingError(`Paid model ${model.id} lacks matching paid connection metadata`, 'INVALID_REGISTRY');
+      if (model.paid && ![...this.registry.agents.values()].some(agent => {
+        const agentEndpoint = agent.paidApi?.endpoint?.replace(/\/$/, '');
+        return (agent.connectionId ?? agent.id ?? agent.provider) === model.connectionId && agentEndpoint === model.endpoint.replace(/\/$/, '') && agent.openCodeProvider?.baseURL.replace(/\/$/, '') === model.endpoint.replace(/\/$/, '');
+      })) throw new RoutingError(`Paid model ${model.id} lacks matching paid connection metadata`, 'INVALID_REGISTRY');
     }
     const collisions = new Map();
     for (const model of models) collisions.set(model.id, (collisions.get(model.id) ?? 0) + 1);
@@ -178,7 +183,7 @@ export class ProjectRuntime extends EventEmitter {
     const catalog = this.modelCatalog();
     if (!catalog || this.config.autoModelRouting === false) return undefined;
     const connectionId = agent.connectionId;
-    const eligibleCatalog = normalizeModelRegistry(catalog).filter(model => !model.paid || this.paidModelEligibility.has(`${model.connectionId}\0${model.id}\0${model.endpoint}`));
+    const eligibleCatalog = normalizeModelRegistry(catalog).filter(model => !model.paid || this.paidModelEligibility.has(`${model.connectionId}\0${model.id}\0${model.endpoint.replace(/\/$/, '')}`));
     let selection;
     try { selection = routeModel({
       provider: agent.provider,
@@ -191,7 +196,7 @@ export class ProjectRuntime extends EventEmitter {
       unavailable: [...this.unavailableConnections(), ...(task.unavailableModels ?? [])],
     }, eligibleCatalog); }
     catch (error) {
-      const paidChoiceDenied = normalizeModelRegistry(catalog).some(model => model.paid && model.eligible && model.connectionId === connectionId && !this.paidModelEligibility.has(`${model.connectionId}\0${model.id}\0${model.endpoint}`));
+      const paidChoiceDenied = normalizeModelRegistry(catalog).some(model => model.paid && model.eligible && model.connectionId === connectionId && !this.paidModelEligibility.has(`${model.connectionId}\0${model.id}\0${model.endpoint.replace(/\/$/, '')}`));
       if (paidChoiceDenied && ['NO_ELIGIBLE_MODEL', 'EMPTY_REGISTRY'].includes(error.code)) {
         const blocked = new Error(`Paid API authorization needed for connection ${connectionId}; no eligible funded model remains`);
         blocked.failureKind = 'authorization-needed';
@@ -326,7 +331,8 @@ export class ProjectRuntime extends EventEmitter {
       const modelEntry = this.modelCatalog() && normalizeModelRegistry(this.modelCatalog()).find(model => model.id === selectedModel && (!model.connectionId || model.connectionId === (agent.connectionId ?? agent.id ?? agent.provider)));
       let paidApiAuthorization;
       if (agent.paidApi) {
-        if (!selectedModel || !agent.paidApi.endpoint || (this.modelCatalog() && (!modelEntry || !modelEntry.paid || modelEntry.endpoint !== agent.paidApi.endpoint))) {
+        const paidEndpoint = agent.paidApi.endpoint?.replace(/\/$/, '');
+        if (!selectedModel || !paidEndpoint || (this.modelCatalog() && (!modelEntry || !modelEntry.paid || modelEntry.endpoint.replace(/\/$/, '') !== paidEndpoint))) {
           const error = new Error(`Paid API authorization needed: connection ${agent.connectionId ?? agent.id}, model ${selectedModel ?? '(unspecified)'} is not explicitly registered as paid`);
           error.failureKind = 'authorization-needed';
           throw error;

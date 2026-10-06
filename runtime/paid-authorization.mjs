@@ -41,13 +41,17 @@ async function acquire(stateDir) {
     }
     return async () => {
       try {
+        // ABA safety: only delete the lock directory if it still contains our
+        // own owner token. A concurrent recovery or replacement owner will have
+        // a different token, so this release must not delete their live lock.
         const held = JSON.parse(await readFile(path.join(lock, 'owner.json'), 'utf8'));
-        if (held.token === owner.token) {
-          // No recovery process removes locks automatically. Operator recovery
-          // is permitted only while all controller processes are stopped.
-          await rm(lock, { recursive: true, force: true });
-        }
-      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        if (held.token === owner.token) await rm(lock, { recursive: true, force: true });
+      } catch (error) {
+        // ENOENT means the lock was already removed (e.g. operator recovery) or
+        // never had an owner file (incomplete lock). Either way we must not
+        // recreate or auto-recover it here; fail closed.
+        if (error.code !== 'ENOENT') throw error;
+      }
     };
   }
   throw new Error(`Timed out waiting for paid API authorization ledger lock at ${lock}. It may be stale or incomplete; stop every controller sharing this state directory, then follow the documented operator recovery procedure. The lock was not removed.`);
