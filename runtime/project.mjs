@@ -82,9 +82,9 @@ export class ProjectRuntime extends EventEmitter {
       if (!agent.paidApi?.endpoint) continue;
       const connectionId = agent.connectionId ?? agent.id;
       const paidEndpoint = agent.paidApi.endpoint.replace(/\/$/, '');
-      const candidates = this.config.autoModelRouting === false || !models.length
+      const candidates = !models.length
         ? [agent.model].filter(Boolean).map(modelId => ({ id: modelId, paid: true, eligible: true, endpoint: paidEndpoint, connectionId }))
-        : models.filter(model => model.paid && model.eligible && model.connectionId === connectionId && model.endpoint.replace(/\/$/, '') === paidEndpoint);
+        : models.filter(model => model.paid && model.eligible !== false && model.connectionId === connectionId && model.endpoint.replace(/\/$/, '') === paidEndpoint);
       for (const model of candidates) requirements.push({ connectionId, modelId: model.id, endpoint: model.endpoint });
     }
     this.paidModelEligibility = new Set(await eligiblePaidConnections({ stateDir: this.store.directory, project: this.repository, requirements }));
@@ -181,7 +181,25 @@ export class ProjectRuntime extends EventEmitter {
    */
   routeFor(agent, task) {
     const catalog = this.modelCatalog();
-    if (!catalog || this.config.autoModelRouting === false) return undefined;
+    if (!catalog || this.config.autoModelRouting === false) {
+      const selectedModel = task.model ?? agent.model;
+      const modelEntry = catalog && selectedModel && normalizeModelRegistry(catalog).find(model => model.id === selectedModel && (!model.connectionId || model.connectionId === (agent.connectionId ?? agent.id ?? agent.provider)));
+      if (agent.paidApi) {
+        const endpoint = agent.paidApi.endpoint?.replace(/\/$/, '');
+        const key = `${agent.connectionId ?? agent.id}\0${selectedModel}\0${endpoint}`;
+        if (!selectedModel || !endpoint || (catalog && (!modelEntry?.paid || modelEntry.endpoint.replace(/\/$/, '') !== endpoint)) || !this.paidModelEligibility.has(key)) {
+          const error = new Error(`Paid API authorization needed for connection ${agent.connectionId ?? agent.id}, model ${selectedModel}`);
+          error.failureKind = 'authorization-needed';
+          throw error;
+        }
+      }
+      if (modelEntry?.paid && !agent.paidApi) {
+        const error = new Error(`Paid API authorization needed: model ${selectedModel} requires its explicitly configured paid connection`);
+        error.failureKind = 'authorization-needed';
+        throw error;
+      }
+      return undefined;
+    }
     const connectionId = agent.connectionId;
     const eligibleCatalog = normalizeModelRegistry(catalog).filter(model => !model.paid || this.paidModelEligibility.has(`${model.connectionId}\0${model.id}\0${model.endpoint.replace(/\/$/, '')}`));
     let selection;
@@ -204,7 +222,41 @@ export class ProjectRuntime extends EventEmitter {
       }
       throw error;
     }
+    if (selection.paid && (!agent.paidApi
+      || (agent.connectionId ?? agent.id) !== selection.connectionId
+      || agent.paidApi.endpoint?.replace(/\/$/, '') !== selection.endpoint?.replace(/\/$/, ''))) {
+      const error = new Error(`Paid API authorization needed for connection ${selection.connectionId}, model ${selection.selectedModel}`);
+      error.failureKind = 'authorization-needed';
+      throw error;
+    }
     return { selectedModel: selection.selectedModel, provider: selection.provider, connectionId: selection.connectionId, paid: selection.paid, endpoint: selection.endpoint, reason: selection.reason, inputs: selection.inputs, at: new Date().toISOString() };
+  }
+
+  /** Resolve the selected adapter and its model together before any Worker preparation. */
+  resolveAgentForTask(initial, task) {
+    const excluded = [...(task.excludeAgents ?? [])];
+    const failures = [];
+    let candidate = initial;
+    if (excluded.includes(initial.id)) {
+      try { candidate = this.registry.select({ role: task.role, capabilities: task.capabilities ?? [], risk: task.risk, exclude: excluded }, this.state.agentPerformance); }
+      catch { candidate = undefined; }
+    }
+    while (candidate && !excluded.includes(candidate.id)) {
+      excluded.push(candidate.id);
+      try {
+        return { agent: candidate, routing: this.routeFor(candidate, task) };
+      } catch (error) {
+        if (error.failureKind !== 'authorization-needed' && !['NO_ELIGIBLE_MODEL', 'EMPTY_REGISTRY'].includes(error.code)) throw error;
+        failures.push(error);
+      }
+      try {
+        candidate = this.registry.select({ role: task.role, capabilities: task.capabilities ?? [], risk: task.risk, exclude: excluded }, this.state.agentPerformance);
+      } catch {
+        candidate = undefined;
+      }
+    }
+    if (failures.length) throw failures.find(error => error.failureKind === 'authorization-needed') ?? failures.at(-1);
+    throw Object.assign(new Error(`No eligible Worker for ${task.role}; paid API authorization may be required`), { failureKind: 'authorization-needed' });
   }
 
   sharedWorker(role, capabilities = [], exclude = []) {
@@ -233,9 +285,13 @@ export class ProjectRuntime extends EventEmitter {
           handoff.selectedModel = routing.selectedModel;
           handoff.routingReason = routing.reason;
         }
+      }, onWorkerSelected: selected => {
+        if (selected.id !== agent.id && !attempted.includes(selected.id)) attempted.push(selected.id);
+        agent = selected;
+        task.onWorkerSelected?.(selected);
       } };
       try {
-        const result = await this.execute(agent, attemptTask);
+      const result = await this.execute(agent, attemptTask);
         if (handoff) { handoff.status = 'resuming'; handoff.selectedModel ??= attemptRouting?.selectedModel; handoff.routingReason ??= attemptRouting?.reason; await this.checkpoint(); }
         this.state.sharedWorker = agent.id;
         return { ...result, worker: agent.id };
@@ -311,13 +367,16 @@ export class ProjectRuntime extends EventEmitter {
   }
 
   async execute(agent, task) {
+    const resolved = this.resolveAgentForTask(agent, task);
+    agent = resolved.agent;
+    const routing = resolved.routing;
+    task.onWorkerSelected?.(agent);
     const runKey = randomUUID();
     const artifactDir = path.join(this.store.directory, 'evidence', task.actionId ?? runKey);
     await mkdir(artifactDir, { recursive: true });
     // Recompute routing for whichever Worker is about to run, including any
     // handoff successor. A fail-closed RoutingError propagates as an ordinary
     // FAILED action and never marks the provider offline.
-    const routing = this.routeFor(agent, task);
     if (routing) task.onRouting?.(routing);
     const abort = new AbortController();
     this.controller = abort;
@@ -452,14 +511,23 @@ export class ProjectRuntime extends EventEmitter {
     await this.event('BUILD', { actionId: id });
     try {
       await this.alignment('execution-route', this.lastObservation, tree, action);
-      const activeBuilder = this.commercial ? this.sharedWorker('build', candidate.capabilities) : builder;
+      let activeBuilder = this.commercial ? this.sharedWorker('build', candidate.capabilities) : builder;
       action.builder = activeBuilder.id; action.builderIdentity = activeBuilder.identity ?? activeBuilder.id;
       const execute = this.commercial ? this.executeWithHandoff.bind(this) : this.execute.bind(this);
       // The builder's pre-dispatch risk is Host-computed from the validated
       // candidate, never the Worker's self-report. Routing only picks a model
       // for the already-selected Worker.
       let builderRouting;
-      action.builderResult = await execute(activeBuilder, { role: 'build', actionId: id, capabilities: candidate.capabilities, risk: action.risk, onRouting: selection => { builderRouting = selection; }, workspace: tree.directory, outputFormat: this.commercial ? 'text' : undefined, prompt: `Goal: ${action.goal}\nProject goal: ${this.state.goal}\nCriteria: ${JSON.stringify(this.state.successCriteria)}\nDiagnosis: ${JSON.stringify(this.state.gaps)}\nAlignment feedback: ${this.lastAlignment?.text ?? ''}\nCurrent source evidence: ${JSON.stringify(this.lastObservation?.sources ?? {})}\nHost observation and live contracts: ${JSON.stringify({ ...this.lastObservation, sources: undefined, snapshot: { hash: this.lastObservation?.snapshot?.hash } })}\nPrevious review findings: ${JSON.stringify(previous?.reviews ?? [])}\nProtected files must not be changed: ${JSON.stringify(this.config.protectedPaths ?? [])}. Modify source only. Check alignment during execution. If the route is wrong, report it rather than silently expanding scope. Host runs tests and commits after you stop.`, outputSchema: { summary: 'string', filesChanged: ['string'] } });
+      action.builderResult = await execute(activeBuilder, { role: 'build', actionId: id, capabilities: candidate.capabilities, risk: action.risk, onWorkerSelected: selected => {
+        activeBuilder = selected;
+        const identity = selected.identity ?? selected.id;
+        action.builderHistory ??= [selected.id];
+        action.builderIdentities ??= [identity];
+        if (!action.builderHistory.includes(selected.id)) action.builderHistory.push(selected.id);
+        if (!action.builderIdentities.includes(identity)) action.builderIdentities.push(identity);
+        action.builder = selected.id;
+        action.builderIdentity = identity;
+      }, onRouting: selection => { builderRouting = selection; }, workspace: tree.directory, outputFormat: this.commercial ? 'text' : undefined, prompt: `Goal: ${action.goal}\nProject goal: ${this.state.goal}\nCriteria: ${JSON.stringify(this.state.successCriteria)}\nDiagnosis: ${JSON.stringify(this.state.gaps)}\nAlignment feedback: ${this.lastAlignment?.text ?? ''}\nCurrent source evidence: ${JSON.stringify(this.lastObservation?.sources ?? {})}\nHost observation and live contracts: ${JSON.stringify({ ...this.lastObservation, sources: undefined, snapshot: { hash: this.lastObservation?.snapshot?.hash } })}\nPrevious review findings: ${JSON.stringify(previous?.reviews ?? [])}\nProtected files must not be changed: ${JSON.stringify(this.config.protectedPaths ?? [])}. Modify source only. Check alignment during execution. If the route is wrong, report it rather than silently expanding scope. Host runs tests and commits after you stop.`, outputSchema: { summary: 'string', filesChanged: ['string'] } });
       if (builderRouting) action.routing = builderRouting;
       if (this.afterBuild) {
         const evidence = await this.afterBuild(clone(action), tree.directory);
@@ -467,7 +535,7 @@ export class ProjectRuntime extends EventEmitter {
       }
       if ((await this.worktrees.snapshot(tree.directory)).hash === beforeBuild.hash) {
         action.phase = 'NO_CHANGE'; action.finishedAt = new Date().toISOString();
-        this.state.failures.push({ actionId: id, worker: builder.id, error: 'No source change; no commit or accepted progress', at: action.finishedAt });
+        this.state.failures.push({ actionId: id, worker: action.builder, error: 'No source change; no commit or accepted progress', at: action.finishedAt });
         updatePerformance(this.state, action.builder, false);
         await this.event('UPDATE', { actionId: id, outcome: 'NO_CHANGE' });
         return action;
@@ -491,7 +559,7 @@ export class ProjectRuntime extends EventEmitter {
     } catch (error) {
       action.phase = safeError(error).includes('STOP_UNCONFIRMED') ? 'HALTED' : 'FAILED';
       action.error = safeError(error);
-      this.state.failures.push({ actionId: id, worker: builder.id, error: action.error, at: new Date().toISOString() });
+      this.state.failures.push({ actionId: id, worker: action.builder, error: action.error, at: new Date().toISOString() });
       updatePerformance(this.state, action.builder, false);
       await this.event(action.phase === 'HALTED' ? 'STOP' : 'REPLAN', { actionId: id, error: action.error });
       if (action.phase === 'HALTED') throw error;
@@ -533,7 +601,7 @@ export class ProjectRuntime extends EventEmitter {
     let activeReviewer;
     let activeTree, activeSnapshot;
     try {
-      for (const reviewer of reviewers) {
+      for (let reviewer of reviewers) {
         activeReviewer = reviewer.id;
         const tree = await this.worktrees.create(randomUUID(), 'review', action.commit);
         activeTree = tree;
@@ -543,6 +611,7 @@ export class ProjectRuntime extends EventEmitter {
         activeSnapshot = initial;
         const actionDiff = action.actionDiff ?? await this.worktrees.diff(action.worktree);
         const report = await this.execute(reviewer, { role: 'review', actionId: action.id, security: required[action.reviews.length] === 'security', risk: action.risk, workspace: tree.directory, outputSchema: REVIEW_SHAPE,
+          onWorkerSelected: selected => { reviewer = selected; activeReviewer = selected.id; },
           prompt: `Independently perform ${required[action.reviews.length]} review of this candidate commit ${action.commit}. Source access is read-only. Do not accept Builder claims as evidence.\nGoal: ${action.goal}\nSuccess criteria: ${JSON.stringify(this.state.successCriteria)}\nActual host test results on Builder tree: ${JSON.stringify(action.tests)}\nActual host tests on clean committed tree: ${JSON.stringify(action.committedTests)}\nCurrent action delta from its dispatch base:\n${actionDiff}\nCumulative candidate diff from accepted baseline (includes inherited rejected work):\n${action.diff}\nApply action-specific file scope to the current action delta, not inherited changes. Evaluate the ENTIRE cumulative candidate against project criteria and protected policy.\nProtected files intact: ${action.protectedIntact}\nReject failures, regressions, missing evidence or blocking risks. Do not modify files.`,
         });
         if (!['pass', 'reject', 'needs_more_evidence'].includes(report.verdict) || typeof report.reason !== 'string' || !Array.isArray(report.evidence) || !report.evidence.length || !Array.isArray(report.blockingRisks)) throw new Error('Invalid independent review report');
