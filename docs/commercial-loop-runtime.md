@@ -137,7 +137,7 @@ OpenCode 的大上下文按文件字节数、行长度和行数切分为多个�
 - `quota`：协议返回 `Usage limit exceeded`、`quota exceeded/exhausted`、`insufficient_quota` 等。此时才将 adapter 设为 `offline`，并通过 `quotaGroup` 传播到同组所有成员。
 - `length`：OpenCode 等原生帧报告 `finishReason=length`/`max_tokens` 且可见输出为零。保留 `finishReason` 与 usage 计数器作为输出耗尽证据，不保存隐藏推理内容；普通空输出仍按原 `Empty research response` 处理。
 
-商业 Loop 在确认 Worker 停止后才进行额度交接。交接记录保存 `from/to/attempt/failureKind` 以及下一次运行的路由证据（所选模型、原因、输入）。同一行动继续时，优先换用不同 provider 的可用模型；同 provider 失败则通过 `escalate` 尝试更强 eligible tier，不会降层、不会调用 `prohibited` 模型、也不会无限重试同一失败模型。部分工作区与 Builder 身份历史保留给接续者和审核者。
+商业 Loop 在确认 Worker 停止后才进行额度或传输交接。交接记录保存 `from/to/attempt/failureKind` 以及下一次运行的路由证据（所选模型、原因、输入）。额度或传输不可用本身不会提高任务所需层级：普通行动可由另一平台的 routine 模型接续；任务原有的升级要求、高风险要求和 security 要求继续生效。只有 `length`、`empty-output` 或 invocation `timeout` 会自动设置 `escalate`，请求更高层级的合格模型；若任务此前已要求升级，该要求也会保留。所有续接都排除已失败模型，不会降级高风险/security 任务、调用 `prohibited` 模型或无限重试。部分工作区与 Builder 身份历史保留给接续者和审核者；后续 Host 测试、独立审核及接受 Gate 不变。
 
 独立商业审核在确认失败 Reviewer 停止后，依次尝试所有剩余 eligible 独立 Reviewer；Builder 及所有 Builder 身份被排除，Reviewer 只读，遇到 `STOP_UNCONFIRMED` 或全部耗尽时关闭失败，不会把 NEED_RESEARCH/PARTIAL/失败审核改为 PASS。
 

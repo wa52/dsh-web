@@ -203,7 +203,8 @@ export class ProjectRuntime extends EventEmitter {
         handoff.to = next.id; handoff.status = 'resuming';
         this.state.sharedWorker = next.id;
         await this.checkpoint();
-        task = { ...task, unavailableModels: failedModels, escalate: true, prompt: `${task.prompt}\nHandoff: ${agent.id} failed with ${failureKind} after confirmed stop. Continue this SAME action in the preserved workspace; inspect existing partial changes, do not restart blindly. Previous error: ${handoff.error}. Snapshot: ${snapshot.hash}. Do not commit or schedule another task.` };
+        const escalate = task.escalate === true || ['length', 'empty-output', 'timeout'].includes(failureKind);
+        task = { ...task, unavailableModels: failedModels, escalate, prompt: `${task.prompt}\nHandoff: ${agent.id} failed with ${failureKind} after confirmed stop. Continue this SAME action in the preserved workspace; inspect existing partial changes, do not restart blindly. Previous error: ${handoff.error}. Snapshot: ${snapshot.hash}. Do not commit or schedule another task.` };
         agent = next;
       }
     }
