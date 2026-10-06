@@ -40,7 +40,7 @@ export class ModelDecision {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         report = await this.execute(agent, {
-      role: 'decide', workspace, outputSchema: ASSESSMENT_SHAPE,
+          role: 'decide', capabilities: ['reason'], workspace, outputSchema: ASSESSMENT_SHAPE,
       // Host-computed routing inputs; a decide Worker can never escalate its own tier.
       risk: escalate ? 'high' : 'normal', escalate,
       onWorkerSelected: selected => { agent = selected; },

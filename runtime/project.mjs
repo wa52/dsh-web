@@ -14,6 +14,9 @@ import { normalizeModelRegistry, routeModel, RoutingError } from './routing.mjs'
 import { reservePaidApiRun, eligiblePaidConnections } from './paid-authorization.mjs';
 
 const safeError = error => redact(error instanceof Error ? error.message : String(error));
+const strings = value => Array.isArray(value) ? value.filter(item => typeof item === 'string' && item) : [];
+const identitiesOf = agent => [...new Set([agent?.id, agent?.identity, ...strings(agent?.identityAliases)])].filter(Boolean);
+const identityLabelsOf = agent => [...new Set([agent?.identity ?? agent?.id, ...strings(agent?.identityAliases)])].filter(Boolean);
 
 /** Project-level Loop hosted by DSH's control plugin, separate from its Agent loop. */
 export class ProjectRuntime extends EventEmitter {
@@ -161,7 +164,7 @@ export class ProjectRuntime extends EventEmitter {
       for (const agent of this.registry.agents.values()) {
         if (!agent.model) continue;
         const entry = catalog.find(model => model?.id === agent.model && (!model.connectionId || model.connectionId === (agent.connectionId ?? agent.id ?? agent.provider)));
-        if (!entry || entry.prohibited === true || entry.eligible === false) throw new RoutingError(`Static model ${agent.model} is not an eligible entry in the Host model registry`, 'INELIGIBLE_STATIC_MODEL');
+        if (!entry || entry.prohibited === true || (entry.eligible === false && !agent.paidApi)) throw new RoutingError(`Static model ${agent.model} is not an eligible entry in the Host model registry`, 'INELIGIBLE_STATIC_MODEL');
       }
     }
   }
@@ -183,7 +186,13 @@ export class ProjectRuntime extends EventEmitter {
     const catalog = this.modelCatalog();
     if (!catalog || this.config.autoModelRouting === false) {
       const selectedModel = task.model ?? agent.model;
-      const modelEntry = catalog && selectedModel && normalizeModelRegistry(catalog).find(model => model.id === selectedModel && (!model.connectionId || model.connectionId === (agent.connectionId ?? agent.id ?? agent.provider)));
+      const modelEntry = catalog && selectedModel && normalizeModelRegistry(catalog).find(model => model.id === selectedModel
+        && model.provider === agent.provider && (!model.connectionId || model.connectionId === (agent.connectionId ?? agent.id ?? agent.provider)));
+      if (catalog && selectedModel && (!modelEntry || !modelEntry.eligible || modelEntry.prohibited)) throw new RoutingError(`Static model ${selectedModel} is not eligible for connection ${agent.connectionId ?? agent.id}`, 'INELIGIBLE_STATIC_MODEL');
+      const securityRequired = task.security === true || task.capabilities?.includes('security') || task.requiredCapabilities?.includes('security');
+      const requiredTier = securityRequired ? 'security' : (task.risk === 'high' || task.escalate === true) ? 'deep' : 'routine';
+      const acceptableTiers = requiredTier === 'security' ? ['security'] : requiredTier === 'deep' ? ['deep', 'security'] : ['routine'];
+      if (modelEntry && !acceptableTiers.includes(modelEntry.tier)) throw new RoutingError(`Static model ${selectedModel} does not satisfy required ${requiredTier} tier for ${task.role}`, 'NO_ELIGIBLE_MODEL');
       if (agent.paidApi) {
         const endpoint = agent.paidApi.endpoint?.replace(/\/$/, '');
         const key = `${agent.connectionId ?? agent.id}\0${selectedModel}\0${endpoint}`;
@@ -234,37 +243,53 @@ export class ProjectRuntime extends EventEmitter {
 
   /** Resolve the selected adapter and its model together before any Worker preparation. */
   resolveAgentForTask(initial, task) {
-    const excluded = [...(task.excludeAgents ?? [])];
+    const excluded = [...new Set([...(task.excludeAgents ?? []), ...(task.reservedReviewerIds ?? [])])];
+    const excludedIdentities = new Set([...(task.excludeIdentities ?? []), ...(task.reservedReviewerIdentities ?? [])]);
+    const requiredCapabilities = [...new Set([...(task.capabilities ?? []), ...(task.requiredCapabilities ?? [])])];
     const failures = [];
+    let deniedPaidConnection;
     let candidate = initial;
-    if (excluded.includes(initial.id)) {
-      try { candidate = this.registry.select({ role: task.role, capabilities: task.capabilities ?? [], risk: task.risk, exclude: excluded }, this.state.agentPerformance); }
+    const allowed = agent => agent && agent.roles?.includes(task.role) && requiredCapabilities.every(capability => agent.capabilities?.includes(capability))
+      && !excluded.includes(agent.id) && !identitiesOf(agent).some(identity => excludedIdentities.has(identity));
+    if (!allowed(candidate)) {
+      try { candidate = this.registry.select({ role: task.role, capabilities: requiredCapabilities, risk: task.risk, exclude: excluded, excludeIdentities: [...excludedIdentities] }, this.state.agentPerformance); }
       catch { candidate = undefined; }
     }
-    while (candidate && !excluded.includes(candidate.id)) {
+    while (allowed(candidate)) {
       excluded.push(candidate.id);
+      for (const identity of identitiesOf(candidate)) excludedIdentities.add(identity);
       try {
-        return { agent: candidate, routing: this.routeFor(candidate, task) };
+        const routing = this.routeFor(candidate, task);
+        task.validateSelected?.(candidate, routing);
+        return { agent: candidate, routing };
       } catch (error) {
-        if (error.failureKind !== 'authorization-needed' && !['NO_ELIGIBLE_MODEL', 'EMPTY_REGISTRY'].includes(error.code)) throw error;
+        if (error.failureKind !== 'authorization-needed' && !['NO_ELIGIBLE_MODEL', 'EMPTY_REGISTRY', 'INELIGIBLE_STATIC_MODEL'].includes(error.code)) throw error;
+        if (candidate.paidApi) deniedPaidConnection ??= candidate.connectionId ?? candidate.id;
         failures.push(error);
       }
       try {
-        candidate = this.registry.select({ role: task.role, capabilities: task.capabilities ?? [], risk: task.risk, exclude: excluded }, this.state.agentPerformance);
+        candidate = this.registry.select({ role: task.role, capabilities: requiredCapabilities, risk: task.risk, exclude: excluded, excludeIdentities: [...excludedIdentities] }, this.state.agentPerformance);
       } catch {
         candidate = undefined;
       }
     }
-    if (failures.length) throw failures.find(error => error.failureKind === 'authorization-needed') ?? failures.at(-1);
+    const authFailure = failures.find(error => error.failureKind === 'authorization-needed');
+    if (authFailure) throw authFailure;
+    if (deniedPaidConnection) {
+      const error = new Error(`Paid API authorization needed for connection ${deniedPaidConnection}; no permitted alternative can satisfy ${task.role}/${requiredCapabilities.join(',')}`);
+      error.failureKind = 'authorization-needed';
+      throw error;
+    }
+    if (failures.length) throw failures.at(-1);
     throw Object.assign(new Error(`No eligible Worker for ${task.role}; paid API authorization may be required`), { failureKind: 'authorization-needed' });
   }
 
-  sharedWorker(role, capabilities = [], exclude = []) {
+  sharedWorker(role, capabilities = [], exclude = [], excludeIdentities = []) {
     const id = this.state.sharedWorker ?? this.config.commercialLoop?.worker;
     const current = this.registry.agents.get(id);
     const unavailable = this.registry.unavailable();
-    if (current && this.registry.eligible(current) && !unavailable.has(current.id) && current.roles.includes(role) && capabilities.every(c => current.capabilities.includes(c)) && !exclude.includes(current.id)) return current;
-    const next = this.registry.select({ role, capabilities, exclude }, this.state.agentPerformance);
+    if (current && this.registry.eligible(current) && !unavailable.has(current.id) && current.roles.includes(role) && capabilities.every(c => current.capabilities.includes(c)) && !exclude.includes(current.id) && !identitiesOf(current).some(identity => excludeIdentities.includes(identity))) return current;
+    const next = this.registry.select({ role, capabilities, exclude, excludeIdentities }, this.state.agentPerformance);
     this.state.sharedWorker = next.id;
     return next;
   }
@@ -272,12 +297,18 @@ export class ProjectRuntime extends EventEmitter {
   async executeWithHandoff(initial, task) {
     let agent = initial;
     const attempted = [];
+    const attemptedIdentities = new Set();
     let handoff;
     while (true) {
-      attempted.push(agent.id);
+      if (!attempted.includes(agent.id)) attempted.push(agent.id);
+      for (const identity of identitiesOf(agent)) attemptedIdentities.add(identity);
+      const currentIdentities = new Set(identitiesOf(agent));
+      const priorAttempted = attempted.filter(id => id !== agent.id);
+      const priorIdentities = [...attemptedIdentities].filter(identity => !currentIdentities.has(identity));
       const outerOnRouting = task.onRouting;
       let attemptRouting;
-      const attemptTask = { ...task, onRouting: routing => {
+      const attemptTask = { ...task, excludeAgents: [...new Set([...(task.excludeAgents ?? []), ...priorAttempted])],
+        excludeIdentities: [...new Set([...(task.excludeIdentities ?? []), ...priorIdentities])], onRouting: routing => {
         attemptRouting = routing;
         outerOnRouting?.(routing);
         if (handoff) {
@@ -285,10 +316,11 @@ export class ProjectRuntime extends EventEmitter {
           handoff.selectedModel = routing.selectedModel;
           handoff.routingReason = routing.reason;
         }
-      }, onWorkerSelected: selected => {
-        if (selected.id !== agent.id && !attempted.includes(selected.id)) attempted.push(selected.id);
+      }, onWorkerSelected: async selected => {
+        if (!attempted.includes(selected.id)) attempted.push(selected.id);
+        for (const identity of identitiesOf(selected)) attemptedIdentities.add(identity);
         agent = selected;
-        task.onWorkerSelected?.(selected);
+        await task.onWorkerSelected?.(selected);
       } };
       try {
       const result = await this.execute(agent, attemptTask);
@@ -323,13 +355,13 @@ export class ProjectRuntime extends EventEmitter {
         await this.checkpoint();
         await this.refreshPaidEligibility();
         let next;
-        try { next = this.sharedWorker(task.role, task.role === 'build' ? task.capabilities ?? [] : ['reason'], attempted); }
+        try { next = this.sharedWorker(task.role, task.capabilities ?? (task.role === 'decide' ? ['reason'] : []), [...new Set([...attempted, ...(task.excludeAgents ?? [])])], [...new Set([...attemptedIdentities, ...(task.excludeIdentities ?? [])])]); }
         catch (routingError) { handoff.status = 'failed'; handoff.routingError = safeError(routingError); await this.checkpoint(); throw routingError; }
         if ((await this.worktrees.snapshot(task.workspace)).hash !== snapshot.hash) throw new Error('Handoff workspace changed before takeover');
         if (task.role === 'build') {
           const action = this.state.actions.find(action => action.id === task.actionId);
           action.builderIdentities ??= [action.builderIdentity];
-          action.builderIdentities.push(next.identity ?? next.id);
+          for (const identity of identityLabelsOf(next)) if (!action.builderIdentities.includes(identity)) action.builderIdentities.push(identity);
           action.builderHistory ??= [action.builder]; action.builderHistory.push(next.id);
           action.builder = next.id; action.builderIdentity = next.identity ?? next.id;
         }
@@ -370,7 +402,7 @@ export class ProjectRuntime extends EventEmitter {
     const resolved = this.resolveAgentForTask(agent, task);
     agent = resolved.agent;
     const routing = resolved.routing;
-    task.onWorkerSelected?.(agent);
+    await task.onWorkerSelected?.(agent);
     const runKey = randomUUID();
     const artifactDir = path.join(this.store.directory, 'evidence', task.actionId ?? runKey);
     await mkdir(artifactDir, { recursive: true });
@@ -387,7 +419,14 @@ export class ProjectRuntime extends EventEmitter {
     let run;
     try {
       const selectedModel = routing?.selectedModel ?? task.model ?? agent.model;
-      const modelEntry = this.modelCatalog() && normalizeModelRegistry(this.modelCatalog()).find(model => model.id === selectedModel && (!model.connectionId || model.connectionId === (agent.connectionId ?? agent.id ?? agent.provider)));
+      const catalog = this.modelCatalog();
+      const modelEntry = catalog && selectedModel && normalizeModelRegistry(catalog).find(model => model.id === selectedModel
+        && model.provider === agent.provider && (!model.connectionId || model.connectionId === (agent.connectionId ?? agent.id ?? agent.provider)));
+      if (catalog && selectedModel && (!modelEntry || !modelEntry.eligible || modelEntry.prohibited)) throw new RoutingError(`Static model ${selectedModel} is not eligible for connection ${agent.connectionId ?? agent.id}`, 'INELIGIBLE_STATIC_MODEL');
+      const securityRequired = task.security === true || task.capabilities?.includes('security') || task.requiredCapabilities?.includes('security');
+      const requiredTier = securityRequired ? 'security' : (task.risk === 'high' || task.escalate === true) ? 'deep' : 'routine';
+      const acceptableTiers = requiredTier === 'security' ? ['security'] : requiredTier === 'deep' ? ['deep', 'security'] : ['routine'];
+      if (modelEntry && !acceptableTiers.includes(modelEntry.tier)) throw new RoutingError(`Static model ${selectedModel} does not satisfy required ${requiredTier} tier for ${task.role}`, 'NO_ELIGIBLE_MODEL');
       let paidApiAuthorization;
       if (agent.paidApi) {
         const paidEndpoint = agent.paidApi.endpoint?.replace(/\/$/, '');
@@ -522,12 +561,12 @@ export class ProjectRuntime extends EventEmitter {
         activeBuilder = selected;
         const identity = selected.identity ?? selected.id;
         action.builderHistory ??= [selected.id];
-        action.builderIdentities ??= [identity];
+        action.builderIdentities ??= [];
         if (!action.builderHistory.includes(selected.id)) action.builderHistory.push(selected.id);
-        if (!action.builderIdentities.includes(identity)) action.builderIdentities.push(identity);
+        for (const alias of identityLabelsOf(selected)) if (!action.builderIdentities.includes(alias)) action.builderIdentities.push(alias);
         action.builder = selected.id;
         action.builderIdentity = identity;
-      }, onRouting: selection => { builderRouting = selection; }, workspace: tree.directory, outputFormat: this.commercial ? 'text' : undefined, prompt: `Goal: ${action.goal}\nProject goal: ${this.state.goal}\nCriteria: ${JSON.stringify(this.state.successCriteria)}\nDiagnosis: ${JSON.stringify(this.state.gaps)}\nAlignment feedback: ${this.lastAlignment?.text ?? ''}\nCurrent source evidence: ${JSON.stringify(this.lastObservation?.sources ?? {})}\nHost observation and live contracts: ${JSON.stringify({ ...this.lastObservation, sources: undefined, snapshot: { hash: this.lastObservation?.snapshot?.hash } })}\nPrevious review findings: ${JSON.stringify(previous?.reviews ?? [])}\nProtected files must not be changed: ${JSON.stringify(this.config.protectedPaths ?? [])}. Modify source only. Check alignment during execution. If the route is wrong, report it rather than silently expanding scope. Host runs tests and commits after you stop.`, outputSchema: { summary: 'string', filesChanged: ['string'] } });
+      }, onRouting: selection => { builderRouting = selection; }, workspace: tree.directory, outputFormat: this.commercial ? 'text' : undefined, prompt: `Goal: ${action.goal}\nProject goal: ${this.state.goal}\nCriteria: ${JSON.stringify(this.state.successCriteria)}\nDiagnosis: ${JSON.stringify(this.state.gaps)}\nAlignment feedback: ${this.lastAlignment?.text ?? ''}\nCurrent source evidence: ${JSON.stringify(this.lastObservation?.sources ?? {})}\nHost observation and live contracts: ${JSON.stringify({ ...this.lastObservation, sources: undefined, snapshot: { hash: this.lastObservation?.snapshot?.hash } })}\nPrevious review findings: ${JSON.stringify(previous?.reviews ?? [])}\nProtected files must not be changed: ${JSON.stringify(this.config.protectedPaths ?? [])}. Add deterministic regression tests for changed behavior; tests are source files and may be added unless explicitly listed as protected. Do not interpret a generic source-only instruction as prohibiting required regression tests. Modify source only beyond those tests. Check alignment during execution. If the route is wrong, report it rather than silently expanding scope. Host runs tests and commits after you stop.`, outputSchema: { summary: 'string', filesChanged: ['string'] } });
       if (builderRouting) action.routing = builderRouting;
       if (this.afterBuild) {
         const evidence = await this.afterBuild(clone(action), tree.directory);
@@ -590,19 +629,25 @@ export class ProjectRuntime extends EventEmitter {
     // cannot consume the only available security reviewer.
     const required = action.risk === 'high' ? ['security', 'review'] : ['review'];
     action.reviews ??= [];
-    const reviewers = [];
-    for (const capability of required.slice(action.reviews.length)) {
-      const usedIdentities = [...(action.builderIdentities ?? [action.builderIdentity ?? action.builder]), ...action.reviews.map(review => this.registry.agents.get(review.reviewer)?.identity ?? review.reviewer), ...reviewers.map(other => other.identity ?? other.id)];
-      const identityExclusions = [...this.registry.agents.values()].filter(agent => usedIdentities.includes(agent.identity ?? agent.id)).map(agent => agent.id);
-      reviewers.push(this.registry.select({ role: 'review', capabilities: [capability], risk: action.risk, exclude: [action.builder, ...(action.builderHistory ?? []), ...action.reviews.map(review => review.reviewer), ...identityExclusions, ...reviewers.map(agent => agent.id)] }, this.state.agentPerformance));
-    }
+    action.reservedReviewerIds ??= [];
+    action.reservedReviewerIdentities ??= [];
+    const builderIds = new Set([action.builder, ...(action.builderHistory ?? [])].filter(Boolean));
+    const builderIdentitySet = new Set([action.builderIdentity, ...(action.builderIdentities ?? [])].filter(Boolean));
+    for (const id of builderIds) for (const identity of identitiesOf(this.registry.agents.get(id))) builderIdentitySet.add(identity);
+    const usedReviewerIds = new Set([...action.reservedReviewerIds, ...action.reviews.map(review => review.reviewer)].filter(Boolean));
+    const usedReviewerIdentities = new Set(action.reservedReviewerIdentities);
+    for (const id of usedReviewerIds) for (const identity of identitiesOf(this.registry.agents.get(id))) usedReviewerIdentities.add(identity);
     action.phase = 'REVIEWING';
     await this.event('REVIEW', { actionId: action.id });
     let activeReviewer;
     let activeTree, activeSnapshot;
     try {
-      for (let reviewer of reviewers) {
-        activeReviewer = reviewer.id;
+      for (const capability of required.slice(action.reviews.length)) {
+        const excludedIds = [...new Set([...builderIds, ...usedReviewerIds])];
+        const excludedIdentities = [...new Set([...builderIdentitySet, ...usedReviewerIdentities])];
+        const reviewer = this.registry.select({ role: 'review', capabilities: ['review', capability], risk: action.risk, exclude: excludedIds, excludeIdentities: excludedIdentities }, this.state.agentPerformance);
+        let actualReviewer;
+        let routing;
         const tree = await this.worktrees.create(randomUUID(), 'review', action.commit);
         activeTree = tree;
         if (!action.committedTests) action.committedTests = await this.tests(tree.directory, `${action.id}-committed`);
@@ -610,20 +655,52 @@ export class ProjectRuntime extends EventEmitter {
         const initial = await this.worktrees.snapshot(tree.directory);
         activeSnapshot = initial;
         const actionDiff = action.actionDiff ?? await this.worktrees.diff(action.worktree);
-        const report = await this.execute(reviewer, { role: 'review', actionId: action.id, security: required[action.reviews.length] === 'security', risk: action.risk, workspace: tree.directory, outputSchema: REVIEW_SHAPE,
-          onWorkerSelected: selected => { reviewer = selected; activeReviewer = selected.id; },
+        const report = await this.execute(reviewer, { role: 'review', actionId: action.id, capabilities: ['review', capability], requiredCapabilities: [capability], security: capability === 'security', risk: action.risk, workspace: tree.directory, outputSchema: REVIEW_SHAPE,
+          excludeAgents: excludedIds, excludeIdentities: excludedIdentities,
+          validateSelected: selected => {
+            const selectedIdentities = identitiesOf(selected);
+            if (!selected.roles.includes('review') || !selected.capabilities.includes('review') || !selected.capabilities.includes(capability)
+              || excludedIds.includes(selected.id) || selectedIdentities.some(identity => excludedIdentities.includes(identity))) {
+              throw new Error(`Independent ${capability} reviewer selection violated role, capability, or identity exclusions`);
+            }
+          },
+          onWorkerSelected: async selected => {
+            actualReviewer = selected;
+            activeReviewer = selected.id;
+            usedReviewerIds.add(selected.id);
+            for (const identity of identitiesOf(selected)) usedReviewerIdentities.add(identity);
+            if (!action.reservedReviewerIds.includes(selected.id)) action.reservedReviewerIds.push(selected.id);
+            for (const identity of identityLabelsOf(selected)) if (!action.reservedReviewerIdentities.includes(identity)) action.reservedReviewerIdentities.push(identity);
+            await this.checkpoint();
+          },
+          onRouting: selection => { routing = selection; },
           prompt: `Independently perform ${required[action.reviews.length]} review of this candidate commit ${action.commit}. Source access is read-only. Do not accept Builder claims as evidence.\nGoal: ${action.goal}\nSuccess criteria: ${JSON.stringify(this.state.successCriteria)}\nActual host test results on Builder tree: ${JSON.stringify(action.tests)}\nActual host tests on clean committed tree: ${JSON.stringify(action.committedTests)}\nCurrent action delta from its dispatch base:\n${actionDiff}\nCumulative candidate diff from accepted baseline (includes inherited rejected work):\n${action.diff}\nApply action-specific file scope to the current action delta, not inherited changes. Evaluate the ENTIRE cumulative candidate against project criteria and protected policy.\nProtected files intact: ${action.protectedIntact}\nReject failures, regressions, missing evidence or blocking risks. Do not modify files.`,
         });
+        if (!actualReviewer || !identitiesOf(actualReviewer).length || builderIds.has(actualReviewer.id) || identitiesOf(actualReviewer).some(identity => builderIdentitySet.has(identity))
+          || action.reviews.some(prior => prior.reviewer === actualReviewer.id || identitiesOf(this.registry.agents.get(prior.reviewer)).some(identity => identitiesOf(actualReviewer).includes(identity)))) {
+          throw new Error('Actual reviewer failed independence validation before review binding');
+        }
         if (!['pass', 'reject', 'needs_more_evidence'].includes(report.verdict) || typeof report.reason !== 'string' || !Array.isArray(report.evidence) || !report.evidence.length || !Array.isArray(report.blockingRisks)) throw new Error('Invalid independent review report');
         if ((await this.worktrees.snapshot(tree.directory)).hash !== initial.hash || (await this.worktrees.snapshot(action.worktree.directory)).hash !== action.snapshot.hash) throw new Error('Reviewer modified source or frozen Builder version');
-        const boundReport = { ...report, reviewer: reviewer.id, capability: required[action.reviews.length], actionId: action.id, commit: action.commit, snapshotHash: action.snapshot.hash, worktree: tree };
+        const boundReport = { ...report, reviewer: actualReviewer.id, capability, actionId: action.id, commit: action.commit, snapshotHash: action.snapshot.hash, worktree: tree,
+          ...(actualReviewer.connectionId ? { connectionId: actualReviewer.connectionId } : {}), ...(routing ? { routing } : {}) };
         action.reviews.push(boundReport); this.state.reviews.push(boundReport);
-        await atomicJson(path.join(this.store.directory, 'evidence', action.id, `review-${reviewer.id}.json`), boundReport);
+        await atomicJson(path.join(this.store.directory, 'evidence', action.id, `review-${actualReviewer.id}.json`), boundReport);
         await this.checkpoint();
         await this.worktrees.remove(tree);
         activeTree = null;
       }
-      const pass = (!this.commercial || action.commercialReview?.audit.outcome === 'PASS') && action.protectedIntact === true && action.tests.every(test => test.passed) && action.committedTests.every(test => test.passed) && action.reviews.length === required.length && action.reviews.every(review => review.verdict === 'pass' && review.blockingRisks.length === 0);
+      const reviewIdentities = new Set();
+      const reviewersIndependent = action.reviews.length === required.length && action.reviews.every((review, index) => {
+        const reviewer = this.registry.agents.get(review.reviewer);
+        const aliases = identitiesOf(reviewer ?? { id: review.reviewer });
+        if (!reviewer || review.capability !== required[index] || builderIds.has(review.reviewer)
+          || aliases.some(identity => builderIdentitySet.has(identity))
+          || aliases.some(identity => reviewIdentities.has(identity))) return false;
+        aliases.forEach(identity => reviewIdentities.add(identity));
+        return true;
+      });
+      const pass = (!this.commercial || action.commercialReview?.audit.outcome === 'PASS') && action.protectedIntact === true && action.tests.every(test => test.passed) && action.committedTests.every(test => test.passed) && reviewersIndependent && action.reviews.every(review => review.verdict === 'pass' && review.blockingRisks.length === 0);
       action.phase = pass ? 'MERGE_READY' : 'REJECTED';
       action.finishedAt = new Date().toISOString();
       if (pass) {

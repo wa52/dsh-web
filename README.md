@@ -204,6 +204,9 @@ node scripts/check-paid-lock-race.mjs  # deterministic local probe for paid-API 
 ```
 
 自动测试包含明确标注的 test-double 决策，用于确定性验证 Gate、回归拒审、worktree、重启和恢复。
+`tests/connection-authorization.test.mjs` 是普通 Host 回归测试源码，覆盖独立进程预留、stale/incomplete 锁、
+付费模型拒绝后的真实 Runtime Reviewer fallback、商业审核实际身份记录和零付费启动；通用 source-only 提示不构成
+禁止新增回归测试的要求，具体项目仍遵循明确的 constraints 与 `protectedPaths`。测试仅使用本地 fixture，不发起付费 API 调用。
 `test:agents` 使用真实 provider 验证连接；`live-workers` 验证四种真实写入及独立审核。
 `test:live` 使用实际模型重新诊断，没有 TODO 顺序或预设审核结论；它在第一次 Builder 停止后
 记录并注入一次配送回归，要求真实测试和 Reviewer 拒绝，再重新规划。
