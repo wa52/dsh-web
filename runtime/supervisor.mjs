@@ -260,15 +260,19 @@ export async function runSupervisedController(rawOptions) {
   const normalizedStatus = finalReport.status?.trim().toUpperCase();
   const finalReportSuccess = ['PASS', 'SUCCESS', 'COMPLETE'].includes(normalizedStatus);
   const succeeded = exitCode === 0 && signal === null && !spawnFailure && finalReport.valid && finalReportCurrentRun && finalReportSuccess && !runtimeState.needed;
+  // A final report declaring anything other than a success status is the
+  // failure itself, current-run or inherited; a zero exit never upgrades it.
+  // Only an unchanged success-class report is 'stale-final-report'.
   const failureType = succeeded ? null
     : spawnFailure ? 'spawn-failure'
       : signal ? 'controller-signal'
         : exitCode !== 0 ? 'controller-exit'
           : !finalReport.valid ? 'missing-or-invalid-final-report'
+              : !finalReportSuccess ? 'final-report-failure'
               : !finalReportCurrentRun ? 'stale-final-report'
-              : runtimeState.descendantVerificationError ? 'unconfirmed-descendants'
-                : runtimeState.needed ? 'stale-runtime-state'
-                : 'final-report-failure';
+                : runtimeState.descendantVerificationError ? 'unconfirmed-descendants'
+                  : runtimeState.needed ? 'stale-runtime-state'
+                  : 'final-report-failure';
   const finishedAt = new Date().toISOString();
   const result = {
     schemaVersion: 1,
@@ -291,7 +295,7 @@ export async function runSupervisedController(rawOptions) {
       : exitCode !== 0 ? `Controller exited with code ${exitCode}`
         : runtimeState.descendantVerificationError ? runtimeState.descendantVerificationError
           : runtimeState.needed ? 'Controller terminated while runtime state or controller lock remained active'
-          : finalReport.valid && finalReportCurrentRun ? `Final report status ${finalReport.status} does not establish success`
+          : finalReport.valid && !finalReportSuccess ? `Final report declares status ${finalReport.status}`
             : finalReport.error ?? 'Final report is missing or stale'),
     lastDurablePhase: phase,
   };
