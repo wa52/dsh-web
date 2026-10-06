@@ -1,0 +1,326 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-06T11:49:29.634Z",
+  "scope": "Runtime routing resilience, not commercial product acceptance",
+  "implementation": "Native OpenCode Go workers dispatched by DSH in isolated Git worktrees; root authored Host probes and this evidence only",
+  "sourceCommit": "64d7aab16403750bd937d0a76cbc0f0af1f42871",
+  "changes": [
+    "Invocation timeout and local transport failure no longer imply shared-account quota exhaustion; explicit quota still quarantines declared shared-account peers",
+    "OpenCode zero-output length finishes retain typed failure, finish reason and usage counters without reasoning content",
+    "Confirmed-stop bounded continuation preserves partial workspace and builder identities, excludes failed models and escalates after length/empty-output/timeout",
+    "Quota/transport continuation retains existing task tier and escalation; high-risk/security requirements are not downgraded",
+    "Independent commercial alignment review tries remaining eligible reviewers after confirmed unavailable/quota/transport failure and remains fail-closed"
+  ],
+  "finalGate": {
+    "protectedIntact": true,
+    "builderTree": {
+      "tests": 137,
+      "pass": 136,
+      "fail": 0,
+      "skipped": 1
+    },
+    "committedTree": {
+      "tests": 137,
+      "pass": 136,
+      "fail": 0,
+      "skipped": 1
+    },
+    "hostProbes": {
+      "onlineLengthEscalation": {
+        "status": "PASS",
+        "events": [
+          {
+            "type": "start",
+            "id": "primary",
+            "model": "small"
+          },
+          {
+            "type": "stopped",
+            "id": "primary"
+          },
+          {
+            "type": "start",
+            "id": "backup",
+            "model": "strong"
+          },
+          {
+            "type": "stopped",
+            "id": "backup"
+          }
+        ],
+        "handOffs": [
+          {
+            "failureKind": "length",
+            "attempt": 1,
+            "routing": {
+              "selectedModel": "strong",
+              "provider": "platform",
+              "reason": "consecutive/escalated failure routed to an eligible higher-tier model",
+              "inputs": {
+                "role": "build",
+                "risk": "normal",
+                "escalate": true,
+                "security": false,
+                "requiredTier": "deep",
+                "provider": "platform"
+              },
+              "at": "2026-10-06T11:48:02.113Z"
+            }
+          }
+        ]
+      },
+      "routineQuotaContinuation": {
+        "status": "PASS",
+        "events": [
+          {
+            "type": "start",
+            "id": "primary",
+            "model": "small"
+          },
+          {
+            "type": "stopped",
+            "id": "primary"
+          },
+          {
+            "type": "start",
+            "id": "backup",
+            "model": "strong"
+          },
+          {
+            "type": "stopped",
+            "id": "backup"
+          }
+        ],
+        "handOffs": [
+          {
+            "failureKind": "quota",
+            "attempt": 1,
+            "routing": {
+              "selectedModel": "strong",
+              "provider": "fallback",
+              "reason": "routine action routed to the routine-tier default",
+              "inputs": {
+                "role": "build",
+                "risk": "normal",
+                "escalate": false,
+                "security": false,
+                "requiredTier": "routine",
+                "provider": "fallback"
+              },
+              "at": "2026-10-06T11:48:04.047Z"
+            }
+          }
+        ]
+      }
+    },
+    "independentReview": [
+      {
+        "reviewer": "dsh-review",
+        "verdict": "pass",
+        "reason": "The action-delta is exactly the single permitted one-line test-helper correction in tests/routing-quota-policy.test.mjs: `behavior.call(this, task)` → `behavior.run.call(this, task)`. Static inspection confirms the helper's `behavior` arguments are object literals exposing `async run(input)` (lines 16, 30), so the inherited `behavior.call` was not a function and could only produce a TypeError misclassified as a handoff failure; invoking `behavior.run` is the correct method. The `this` binding is also correct: ProjectRuntime stores the same agent objects in the registry (runtime/project.mjs:28) and invokes `agent.start(...)` as a method (runtime/project.mjs:252), so `this` inside `start` is the worker test double; `this.availability = 'offline'` (line 18) therefore mutates the worker's availability, which is exactly what runtime/registry.mjs:11 and runtime/routing.mjs:104-118 read, mirroring production ProcessAdapter quota handling at runtime/process.mjs:139. Passing the worker as `this` preserves the rejected candidate's original intent while fixing the invocation. All eight leaf scenarios and every assertion are byte-present and unchanged (tests/routing-quota-policy.test.mjs:72-146: quota/transport handoff, high-risk/security tier retention, task-required escalation, and length/empty-output/timeout escalation), and the file is the only cumulative-candidate change, so all runtime files and all other inherited tests remain byte-identical and the quota/transport-vs-length/empty-output/timeout policy is untouched. Host-run evidence on both the Builder tree and the clean committed tree reports 136 pass / 0 fail / 1 skipped (137 tests) including all eight quota-policy subtests, plus both external probes returning status PASS (handOffs failureKind length → higher-tier deep, and quota → routine-tier fallback), consistent with the corrected helper. No blocking risk is identified.",
+        "evidence": [
+          "tests/routing-quota-policy.test.mjs:65 (behavior.run.call(this, task))",
+          "tests/routing-quota-policy.test.mjs:16-35 (behavior objects exposing async run(input); quota sets this.availability='offline')",
+          "tests/routing-quota-policy.test.mjs:72-146 (all 4 top-level tests / 8 leaf scenarios and assertions intact)",
+          "runtime/project.mjs:28 (registry.add(agent) stores the same worker object)",
+          "runtime/project.mjs:252 (agent.start({...}) invoked as method, so this === worker inside start)",
+          "runtime/project.mjs:176-207 (failureKind continuity and length/empty-output/timeout escalation vs quota/transport non-escalation)",
+          "runtime/routing.mjs:104-118 and runtime/registry.mjs:11 (availability read by unavailableAgentIds)",
+          "runtime/process.mjs:139 (production sets availability='offline' on classified quota, matching the helper's emulation)",
+          "Host test result builder tree: 137 tests, 136 pass, 0 fail, 1 skipped, all quota-policy subtests pass",
+          "Host test result clean committed tree: 137 tests, 136 pass, 0 fail, 1 skipped, all quota-policy subtests pass",
+          "External Host probes: both status PASS (length → higher-tier deep routing; quota → routine-tier fallback)",
+          "Cumulative candidate diff limited to tests/routing-quota-policy.test.mjs index 550093b..a9290ce"
+        ],
+        "blockingRisks": []
+      }
+    ],
+    "actionPhase": "MERGE_READY"
+  },
+  "nativeRepairRuns": [
+    {
+      "name": "routing-resilience",
+      "status": "budget-exhausted",
+      "actions": [
+        {
+          "commit": "bbd40c64bd8778718e4fc674292df3c7789c52d5",
+          "phase": "REJECTED",
+          "builder": "go-builder",
+          "protectedIntact": true,
+          "builderChecks": [
+            false
+          ],
+          "committedChecks": [
+            false
+          ],
+          "reviews": [
+            {
+              "reviewer": "go-review",
+              "verdict": "reject",
+              "reason": "The candidate commit fails its own stated success criteria. Both the full Host test suite and the clean committed-tree test suite report 10 failures, all in the newly added `tests/routing-resilience-regressions.test.mjs`. The success criteria explicitly require 'Full Host tests AND clean committed tree tests must pass and an independent reviewer must approve.' Because tests fail on both trees, the change cannot be approved. The failures indicate the new regression tests assert runtime behavior (typed timeout/spawn classification, OpenCode length-frame exhaustion evidence, commercial handoff persistence, and reviewer fallback exhaustiveness) that the current runtime source does not satisfy, which contradicts the claim that only a test file was added while existing runtime source remained sufficient."
+            },
+            {
+              "reviewer": "dsh-review",
+              "verdict": "reject",
+              "reason": "The candidate adds only tests/routing-resilience-regressions.test.mjs and leaves all runtime source unchanged, so its own required regressions fail. Both mandated host runs fail identically: Builder tree and clean committed tree each report 115 pass / 10 fail / 1 skip, with all 10 failures inside the new file. Success criterion 5 explicitly requires 'Full Host tests AND clean committed tree tests must pass and an independent reviewer must approve', and criterion 1 conditionally permits a narrow runtime/process.mjs failure-classification change if needed. No runtime change was made, and the unchanged runtime does not implement the behavior the tests assert: ProcessAdapter never attaches failureKind or length/usage evidence (runtime/process.mjs:124-128), a timeout's 'Agent run budget exceeded' still matches the quota regex and flips availability to 'offline' (process.mjs:127), the OpenCode frame handler ignores step_finish/length frames (runtime/adapters.mjs:82-83), decodeAnswer throws only the generic 'Empty research response' (adapters.mjs:12-16), persisted handoffs have no attempt/failureKind (runtime/project.mjs:164), and commercial alignment attempts at most two reviewers before rethrowing (runtime/commercial.mjs:126-132). Because the tests encode desired post-fix behavior while the runtime remains unfixed, the deliverable is internally contradictory with the success criteria; it is a set of failing tests, not a passing regression suite. Failing-test regressions cannot be accepted as completion evidence."
+            }
+          ]
+        },
+        {
+          "commit": "93d11ba88115fbcda9baa1fe1ff292d71536a22f",
+          "phase": "REJECTED",
+          "builder": "go-backup",
+          "protectedIntact": true,
+          "builderChecks": [
+            false
+          ],
+          "committedChecks": [
+            false
+          ],
+          "reviews": [
+            {
+              "reviewer": "go-review",
+              "verdict": "reject",
+              "reason": "The candidate commit introduces a block-scoping regression in runtime/commercial.mjs that makes `reviewer` undefined at the alignment record construction site, breaking every commercial alignment stage. It also fails the additive timeout test because the test fixture registers a ProcessAdapter without `capabilities`, causing `AgentRegistry.select` to throw. Both the Builder tree and the clean committed-tree test runs show 22 failures, including pre-existing commercial-loop tests and the new routing-resilience-regressions tests. The required success criteria (single timeout not quarantining peers, true quota propagation, OpenCode length-frame handling, bounded handoff, independent reviewer fallback, fail-closed exhaustion, and full test passage) are therefore not met."
+            },
+            {
+              "reviewer": "dsh-review",
+              "verdict": "reject",
+              "reason": "The candidate introduces a hard regression that breaks the entire commercial alignment path. In runtime/commercial.mjs the refactor declares `let reviewer;` inside the `while (true)` retry block (line 128) but still reads `reviewer.id` outside that block at lines 157-158, so every CommercialLoop.stage() that gets past reviewer selection throws `ReferenceError: reviewer is not defined`. This is demonstrated in the supplied host logs on both the Builder tree and the clean committed tree (~20 pre-existing commercial-loop/commercial-recovery/commercial-stage-contracts tests fail with that exact error), and I confirmed the block-scoping defect directly in the source. A second pre-existing test fails because runtime/project.mjs:160 now flips a successful handoff to status `completed`, while tests/commercial-loop.test.mjs:129 pins `resuming`. The new additive regression file itself also fails: the timeout test crashes in runtime/registry.mjs:15 because its ProcessAdapter fixture is built without `roles`/`capabilities`, and the reviewer-fallback test fails via the same `reviewer` ReferenceError. Success criteria require full Host tests and clean committed-tree tests to pass plus independent approval; none of that holds, so the candidate cannot pass."
+            }
+          ]
+        },
+        {
+          "commit": "85d81fb0b72a3c37916ae11222362fc04d7c2bbb",
+          "phase": "MERGE_READY",
+          "builder": "go-builder",
+          "protectedIntact": true,
+          "builderChecks": [
+            true
+          ],
+          "committedChecks": [
+            true
+          ],
+          "reviews": [
+            {
+              "reviewer": "go-review",
+              "verdict": "pass",
+              "reason": "The candidate commit implements the bounded routing-resilience repair and additive regression coverage as required. Failure classification in runtime/process.mjs now distinguishes timeout, transport/spawn, and quota, only marking providers offline for quota while preserving PID/fingerprint, launch-token, redaction, descendant-stop and disposal fences. runtime/adapters.mjs preserves OpenCode length finish reason and usage counters, and ordinary empty-output failures remain distinct. runtime/project.mjs continues the same commercial action after confirmed stop on length/empty-output/timeout/transport/quota, persists handoff evidence (failureKind, attempt, failed model, routing reason), updates builder identity history, and fails closed when no eligible successor or model exists. runtime/commercial.mjs iterates over all remaining eligible independent reviewers after unavailable/quota/transport failures, excludes builder identities, stops on STOP_UNCONFIRMED, and never converts a failed review into PASS. New deterministic regression tests cover timeout/quota/transport classification, OpenCode length frames, commercial handoff model change, reviewer fallback, fail-closed exhaustion, and prohibited escalation, without editing pre-existing tests. Full Host tests and clean committed-tree tests both pass (125 pass, 0 fail, 1 pre-existing skip)."
+            },
+            {
+              "reviewer": "dsh-review",
+              "verdict": "pass",
+              "reason": "Independently inspected the entire cumulative candidate against the stated criteria. The CommercialLoop.stage reviewer loop now keeps the successful reviewer in outer scope and iterates every remaining eligible reviewer, excluding the alignment author identity, all builder/builderHistory/builderIdentities, and retrying only after a confirmed stop (a dispose failure surfaces as STOP_UNCONFIRMED and is rethrown before any new start). Failure classification in runtime/process.mjs is narrowly scoped: only explicit quota evidence sets availability='offline' and propagates through quotaGroup; timeout ('Agent run budget exceeded') and local spawn/transport faults are typed but do not quarantine account peers; launch token, PID/fingerprint, descendant kill, redaction and disposal paths are untouched. executeWithHandoff now treats length/empty-output/timeout/quota/transport as continuable, snapshots the preserved workspace before selecting any successor, verifies the snapshot is unchanged before takeover, records attempt/failureKind/finishReason/usage/failedModel/failureRouting/unavailableModels/selectedModel/routingReason on the handoff, excludes the failed model from the next routeModel call (so other models on the same provider stay eligible), escalates with escalate:true against catalog metadata, updates action.builderHistory/builderIdentities, and fails closed when sharedWorker or routeModel finds no eligible choice. OpenCode length finishes with zero visible output now produce a typed length failure carrying safe finishReason and token counters (no hidden reasoning content) instead of the generic empty-research error, while ordinary empty output remains 'Empty research response'. The additive test file drives the real ProcessAdapter/registry/router/ProjectRuntime/CommercialLoop seams and registers the required roles/capabilities for the corrected timeout fixture; no pre-existing test was edited. Both provided host runs (Builder tree and clean committed tree) report 125 pass / 0 fail / 1 pre-existing skip including all new regressions. I found no blocking defect or regression; only minor, non-blocking observations are listed."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "routing-quota-policy",
+      "status": "stopped",
+      "actions": [
+        {
+          "commit": "9f0372b6c59882333577354af7712f6798c8b4c3",
+          "phase": "REJECTED",
+          "builder": "go-builder",
+          "protectedIntact": true,
+          "builderChecks": [
+            false,
+            false,
+            false
+          ],
+          "committedChecks": [
+            false,
+            true,
+            true
+          ],
+          "reviews": [
+            {
+              "reviewer": "dsh-review",
+              "verdict": "reject",
+              "reason": "The runtime and documentation change correctly narrows escalation (runtime/project.mjs:206 now sets escalate = task.escalate === true || ['length','empty-output','timeout'].includes(failureKind)), and the failureKind strings it keys on genuinely exist ('timeout' in runtime/process.mjs:20, 'empty-output' in runtime/adapters.mjs:14, 'length' in runtime/adapters.mjs:90; routing.mjs:76 keeps routine for normal non-escalated, deep for escalate/high-risk, security for security). However the candidate is not acceptable because its only new regression artifact is itself broken: tests/routing-quota-policy.test.mjs:65 invokes behavior.call(this, task) while both call sites (lines 15 and 29) pass a behavior object literal { async run(input){...} } instead of a function, so every added test throws 'TypeError: behavior.call is not a function'. Host evidence confirms this on both the builder tree and the clean committed tree (test-0 exit 1; 125 pass / 11 fail / 1 skip), so the required full-repository-suite criterion is unmet and the new behavioral assertions (routine quota fallback, no high-risk/security downgrade, retained length escalation) have no green evidence."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "routing-test-fixture",
+      "status": "budget-exhausted",
+      "actions": [
+        {
+          "commit": "64d7aab16403750bd937d0a76cbc0f0af1f42871",
+          "phase": "MERGE_READY",
+          "builder": "go-builder",
+          "protectedIntact": true,
+          "builderChecks": [
+            true,
+            true,
+            true
+          ],
+          "committedChecks": [
+            true,
+            true,
+            true
+          ],
+          "reviews": [
+            {
+              "reviewer": "dsh-review",
+              "verdict": "pass",
+              "reason": "The action-delta is exactly the single permitted one-line test-helper correction in tests/routing-quota-policy.test.mjs: `behavior.call(this, task)` → `behavior.run.call(this, task)`. Static inspection confirms the helper's `behavior` arguments are object literals exposing `async run(input)` (lines 16, 30), so the inherited `behavior.call` was not a function and could only produce a TypeError misclassified as a handoff failure; invoking `behavior.run` is the correct method. The `this` binding is also correct: ProjectRuntime stores the same agent objects in the registry (runtime/project.mjs:28) and invokes `agent.start(...)` as a method (runtime/project.mjs:252), so `this` inside `start` is the worker test double; `this.availability = 'offline'` (line 18) therefore mutates the worker's availability, which is exactly what runtime/registry.mjs:11 and runtime/routing.mjs:104-118 read, mirroring production ProcessAdapter quota handling at runtime/process.mjs:139. Passing the worker as `this` preserves the rejected candidate's original intent while fixing the invocation. All eight leaf scenarios and every assertion are byte-present and unchanged (tests/routing-quota-policy.test.mjs:72-146: quota/transport handoff, high-risk/security tier retention, task-required escalation, and length/empty-output/timeout escalation), and the file is the only cumulative-candidate change, so all runtime files and all other inherited tests remain byte-identical and the quota/transport-vs-length/empty-output/timeout policy is untouched. Host-run evidence on both the Builder tree and the clean committed tree reports 136 pass / 0 fail / 1 skipped (137 tests) including all eight quota-policy subtests, plus both external probes returning status PASS (handOffs failureKind length → higher-tier deep, and quota → routine-tier fallback), consistent with the corrected helper. No blocking risk is identified."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "additionalHostFindings": [
+    {
+      "candidate": "85d81fb0b72a3c37916ae11222362fc04d7c2bbb",
+      "finding": "The independent routine quota continuation probe failed despite the framework suite/review passing; unconditional escalation rejected an available routine-tier fallback. This candidate was not integrated alone."
+    },
+    {
+      "candidate": "9f0372b6c59882333577354af7712f6798c8b4c3",
+      "finding": "An additive regression helper incorrectly invoked behavior.call instead of behavior.run.call. Both model-policy probes passed after the Root Host fixture directory was shortened for Windows; full suite failure still prevented acceptance."
+    }
+  ],
+  "precedingMediumExperiment": {
+    "sourceCommit": "51d55858ef9d2aa89b5575205ccdef103d02a178",
+    "status": "stopped",
+    "error": "No available agent for review/review",
+    "nonIntervention": true,
+    "interventions": [],
+    "configurationUnchanged": {
+      "medium-service-brief.md": true,
+      "medium-service-acceptance.mjs": true,
+      "medium-service-browser.py": true,
+      "medium-service-retry-supervised.mjs": true
+    },
+    "actions": [
+      {
+        "phase": "FAILED",
+        "builder": "go-primary",
+        "error": "Empty research response"
+      },
+      {
+        "phase": "FAILED",
+        "builder": "codex",
+        "error": "No available agent for build/code"
+      }
+    ],
+    "supervisor": {
+      "status": "FAIL",
+      "exitCode": 0,
+      "confirmedClosed": true,
+      "lastDurablePhase": "STOP",
+      "failureType": "final-report-failure"
+    }
+  },
+  "limits": [
+    "These deterministic policy regressions and native framework repair gates do not prove the medium SupportDesk product can now be delivered commercially. The prior untouched product experiment remains failed/stopped.",
+    "Model eligibility, tier and prohibition are Host catalog metadata; selection does not measure vendor pricing or remaining quota.",
+    "Continuation is bounded by eligible distinct worker adapters; missing eligible workers/models remains fail-closed.",
+    "The original historical silent-exit triggering cause remains unknown; the previously published supervisor repairs missing-result/stale-state observability."
+  ]
+}
