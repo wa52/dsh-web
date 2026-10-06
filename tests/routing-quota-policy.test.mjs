@@ -62,7 +62,7 @@ function worker(id, provider, behavior, log) {
       log.push({ type: 'start', id, model: task.model, role: task.role });
       return {
         id: task.runKey,
-        result: Promise.resolve().then(() => behavior.call(this, task)),
+        result: Promise.resolve().then(() => behavior.run.call(this, task)),
         dispose: async () => { log.push({ type: 'stopped', id, role: task.role }); },
       };
     },
