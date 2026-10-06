@@ -93,7 +93,17 @@ test('local spawn/transport failure does not falsely quarantine shared-account p
   }));
   const peer = { id: 'pi', provider: 'pi', quotaGroup: 'shared-codex-account', availability: 'online', roles: ['build'], capabilities: ['code'], start() {} };
   const registry = new AgentRegistry(); registry.add(adapter); registry.add(peer);
-  await assert.rejects(adapter.start(processTask(root)));
+  // On Windows the native launch is wrapped in a supervisor process, so spawn may
+  // succeed and the transport failure surfaces on handle.result. Accept either seam.
+  let handle;
+  try { handle = await adapter.start(processTask(root)); }
+  catch (error) {
+    assert.equal(error.failureKind, 'transport');
+  }
+  if (handle) {
+    try { await assert.rejects(handle.result, error => error.failureKind === 'transport'); }
+    finally { await handle.dispose(); }
+  }
   assert.notEqual(adapter.availability, 'offline', 'a local executable/transport fault is not account quota evidence');
   assert.equal(registry.isUnavailable('pi'), false);
 });

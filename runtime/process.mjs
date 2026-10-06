@@ -13,6 +13,16 @@ export const redact = text => String(text)
   .replace(/(?:gh[pousr]_[\w]+|github_pat_[\w]+|sk-[\w-]{16,})/g, '[REDACTED]')
   .replace(/((?:api[_-]?key|authorization|access[_-]?token)\s*[=:]\s*["']?)[^\s,"'}]+/gi, '$1[REDACTED]');
 
+export function classifyFailure(error) {
+  if (error?.failureKind) return { kind: error.failureKind, quota: error.failureKind === 'quota' };
+  const message = String(error?.message ?? '');
+  const code = error?.code;
+  if (message === 'Agent run budget exceeded' || /\binvocation timed out\b/i.test(message)) return { kind: 'timeout', quota: false };
+  if (['ENOENT', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN'].includes(code) || /CreateProcess failed|cannot find the file|not recognized|spawn ENOENT|No such file|transport unavailable|connection refused|connect timed out/i.test(message)) return { kind: 'transport', quota: false };
+  if (/usage limit|quota.{0,30}(?:exceed|exhaust)|insufficient_quota/i.test(message)) return { kind: 'quota', quota: true };
+  return { kind: error?.name === 'RoutingError' ? 'routing' : 'runtime', quota: false };
+}
+
 export function parseObject(text) {
   const blocks = [...text.matchAll(/```json\s*([\s\S]*?)```/gi)];
   if (blocks.length > 1) throw new Error('Ambiguous JSON response: multiple objects');
@@ -123,8 +133,11 @@ export class ProcessAdapter {
     const send = value => { if (!child.stdin.destroyed) child.stdin.write(JSON.stringify(value) + '\n'); };
     const fail = error => {
       if (terminal) return;
-      terminal = true; info.status = 'failed'; info.error = redact(error.message); reject(error);
-      if (/usage limit|quota.{0,30}(?:exceed|exhaust)|insufficient_quota|Agent run budget exceeded/i.test(error.message) || ['ENOENT', 'ECONNREFUSED', 'ETIMEDOUT'].includes(error.code)) this.availability = 'offline';
+      terminal = true; info.status = 'failed'; info.error = redact(error.message);
+      const classification = classifyFailure(error);
+      error.failureKind ??= classification.kind;
+      if (classification.quota) this.availability = 'offline';
+      reject(error);
     };
     const complete = value => {
       if (terminal) return;
@@ -162,7 +175,16 @@ export class ProcessAdapter {
       try {
         await logged;
         if (!terminal) {
-          if (code !== 0) throw new Error(`${this.id} exited ${code}; see ${logPath}`);
+          if (code !== 0) {
+            const log = await readFile(logPath, 'utf8').catch(() => '');
+            const text = `${output}\n${log}`.toLowerCase();
+            if (/CreateProcess failed|cannot find the file|not recognized|spawn enoent|no such file|transport unavailable|connection refused|connect timed out/i.test(text)) {
+              const error = new Error(`Worker transport failed: ${this.id} could not launch the native executable`);
+              error.failureKind = 'transport';
+              throw error;
+            }
+            throw new Error(`${this.id} exited ${code}; see ${logPath}`);
+          }
           complete(await launchSpec.finish(output));
         }
       } catch (error) { fail(error); }
@@ -183,10 +205,14 @@ export class ProcessAdapter {
     task.signal?.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(() => { fail(new Error('Agent run budget exceeded')); void dispose().catch(fail); }, task.timeoutMs ?? 300_000);
     try {
-      if (!child.pid) throw new Error(`Cannot spawn ${launchSpec.executable}; use an absolute native/.ps1 executable or Node argsPrefix`);
+      if (!child.pid) {
+        const error = new Error(`Cannot spawn ${launchSpec.executable}; use an absolute native/.ps1 executable or Node argsPrefix`);
+        error.failureKind = 'transport';
+        throw error;
+      }
       info.fingerprint = await processFingerprint(child.pid);
     }
-    catch (error) { await dispose(); throw error; }
+    catch (error) { error.failureKind ??= classifyFailure(error).kind; await dispose(); throw error; }
     task.onEvent?.({ type: 'run-started', ...info });
     launchSpec.begin?.({ send });
     if (launchSpec.stdin !== undefined) child.stdin.end(launchSpec.stdin);

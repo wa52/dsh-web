@@ -79,7 +79,21 @@ async function cliSpec(provider, config, task) {
     }
     return { ...base, args: ['run', '--pure', '--format', 'json', '--dir', task.workspace, '--title', `DSH ${launchKey}`, ...modelArgs, ...attachments.flatMap(file => ['--file', file]), '--', 'Read ALL attached prompt parts in filename order. They contain one bounded action and its complete current evidence. Long serialized lines are hard-wrapped for ReadTool; do not treat wrapping as absent evidence. Follow the response format at the end.'], stdin: '',
       env: { ...base.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: permissions, agent: { control: { mode: 'primary', permission: permissions } } }) },
-      onFrame: frame => { if (frame.type === 'text') answer = frame.part?.text ?? frame.text ?? ''; if (frame.type === 'error') throw new Error(JSON.stringify(frame.error)); },
+      onFrame: frame => {
+        if (frame.type === 'text') answer = frame.part?.text ?? frame.text ?? '';
+        if (frame.type === 'error') throw new Error(JSON.stringify(frame.error));
+        const finishReason = frame.part?.reason ?? frame.reason;
+        const usage = frame.part?.tokens ?? frame.tokens;
+        if (frame.type === 'step_finish' || frame.type === 'step-finish' || frame.part?.type === 'step-finish') {
+          if ((finishReason === 'length' || finishReason === 'max_tokens') && !answer.trim()) {
+            const error = new Error('OpenCode output exhausted at length finish');
+            error.failureKind = 'length';
+            error.finishReason = finishReason;
+            error.usage = usage;
+            throw error;
+          }
+        }
+      },
       finish: () => decodeAnswer(answer, task.outputFormat), strictFrames: false };
   }
   if (provider === 'pi') {

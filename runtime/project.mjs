@@ -7,7 +7,7 @@ import { WorktreeManager, hash } from './worktrees.mjs';
 import { AgentRegistry, updatePerformance } from './registry.mjs';
 import { ModelDecision, REVIEW_SHAPE, validateAssessment } from './decision.mjs';
 import { policyFor } from './permissions.mjs';
-import { runCommand, redact } from './process.mjs';
+import { runCommand, redact, classifyFailure } from './process.mjs';
 import { changedPathRisk, sourceObservation, testSummary } from './governance.mjs';
 import { CommercialLoop } from './commercial.mjs';
 import { normalizeModelRegistry, routeModel, RoutingError } from './routing.mjs';
@@ -152,16 +152,20 @@ export class ProjectRuntime extends EventEmitter {
   async executeWithHandoff(initial, task) {
     let agent = initial;
     const attempted = [];
+    let handoff;
     while (true) {
       attempted.push(agent.id);
       try {
         const result = await this.execute(agent, task);
+        if (handoff) { handoff.status = 'completed'; await this.checkpoint(); }
         this.state.sharedWorker = agent.id;
         return { ...result, worker: agent.id };
       } catch (error) {
+        if (handoff) handoff.status = 'failed';
         if (agent.availability !== 'offline' || safeError(error).includes('STOP_UNCONFIRMED')) throw error;
         const snapshot = await this.worktrees.snapshot(task.workspace);
-        const handoff = { id: randomUUID(), from: agent.id, role: task.role, actionId: task.actionId, workspace: task.workspace, snapshotHash: snapshot.hash, error: safeError(error), at: new Date().toISOString(), status: 'waiting' };
+        const attempt = attempted.length;
+        handoff = { id: randomUUID(), from: agent.id, to: null, attempt, role: task.role, actionId: task.actionId, workspace: task.workspace, snapshotHash: snapshot.hash, error: safeError(error), failureKind: error.failureKind ?? classifyFailure(error).kind, at: new Date().toISOString(), status: 'waiting' };
         this.state.handoffs ??= []; this.state.handoffs.push(handoff);
         await atomicJson(path.join(this.store.directory, 'evidence', handoff.id, 'checkpoint.json'), { ...handoff, snapshot, goal: this.state.goal, prompt: task.prompt, latestAlignment: this.lastAlignment?.text });
         await this.checkpoint();
@@ -177,7 +181,8 @@ export class ProjectRuntime extends EventEmitter {
         handoff.to = next.id; handoff.status = 'resuming';
         this.state.sharedWorker = next.id;
         await this.checkpoint();
-        task = { ...task, prompt: `${task.prompt}\nHandoff: ${agent.id} exhausted quota/unavailable after confirmed stop. Continue this SAME action in the preserved workspace; inspect existing partial changes, do not restart blindly. Previous error: ${handoff.error}. Snapshot: ${snapshot.hash}. Do not commit or schedule another task.` };
+        const outerOnRouting = task.onRouting;
+        task = { ...task, escalate: next.provider === agent.provider ? true : task.escalate, prompt: `${task.prompt}\nHandoff: ${agent.id} exhausted quota/unavailable after confirmed stop. Continue this SAME action in the preserved workspace; inspect existing partial changes, do not restart blindly. Previous error: ${handoff.error}. Snapshot: ${snapshot.hash}. Do not commit or schedule another task.`, onRouting: routing => { handoff.routing = routing; outerOnRouting?.(routing); } };
         agent = next;
       }
     }

@@ -120,15 +120,21 @@ export class CommercialLoop {
     const plannedBuilder = stage === 'plan' && observation?.proposedAction?.workerId ? r.registry.get(observation.proposedAction.workerId) : null;
     const candidate = action ?? (plannedBuilder ? { builder: plannedBuilder.id, builderIdentity: plannedBuilder.identity ?? plannedBuilder.id } : stage === 'commercial-completion' ? r.state.actions.at(-1) : null);
     const excluded = [...new Set([...(candidate?.builderHistory ?? []), candidate?.builder, ...[...r.registry.agents.values()].filter(agent => (agent.identity ?? agent.id) === identity || (candidate?.builderIdentities ?? [candidate?.builderIdentity]).includes(agent.identity ?? agent.id)).map(agent => agent.id)])];
-    let reviewer = r.registry.select({ role: 'review', capabilities: ['review'], exclude: excluded }, r.state.agentPerformance);
     const task = { role: 'review', workspace: tree.directory, actionId: id, outputSchema: auditShape,
       prompt: `Independently audit the ${stage} alignment analysis. You are not its author or this action's Builder. Verify selection/suitability of benchmarks, actual alignment, evidence and recommendations; no files may change. PASS here means this stage is adequately checked, NOT that the whole product is commercial-ready. ${stageAuditContract(stage)} Reference URLs alone are not proof: consider verified source text and project evidence. Return NEED_RESEARCH when evidence is insufficient, WRONG_DIRECTION for a bad route, REGRESSION for introduced failures, or PARTIAL/BLOCKED as appropriate. Stage audit must never override Host tests, protected files or the mandatory candidate review.\nAnalysis:\n${notes.text}\nEvidence:\n${JSON.stringify(context)}` };
-    let audit;
-    try { audit = await r.execute(reviewer, task); }
-    catch (error) {
-      if (!r.registry.isUnavailable(reviewer.id) || String(error.message).includes('STOP_UNCONFIRMED')) throw error;
-      reviewer = r.registry.select({ role: 'review', capabilities: ['review'], exclude: [...excluded, reviewer.id] }, r.state.agentPerformance);
-      audit = await r.execute(reviewer, task);
+    const attemptedReviewers = [];
+    let audit, lastError;
+    while (true) {
+      let reviewer;
+      try { reviewer = r.registry.select({ role: 'review', capabilities: ['review'], exclude: [...excluded, ...attemptedReviewers] }, r.state.agentPerformance); }
+      catch (error) { throw new Error(`REVIEWER_EXHAUSTION: no eligible independent reviewer after ${attemptedReviewers.length} attempts${lastError ? `; last: ${redact(lastError.message)}` : ''}`); }
+      attemptedReviewers.push(reviewer.id);
+      try { audit = await r.execute(reviewer, task); break; }
+      catch (error) {
+        if (String(error.message).includes('STOP_UNCONFIRMED')) throw error;
+        if (!r.registry.isUnavailable(reviewer.id)) throw error;
+        lastError = error;
+      }
     }
     if ((await r.worktrees.snapshot(tree.directory)).hash !== before.hash) throw new Error('Alignment reviewer changed source');
     validateAlignment(audit);

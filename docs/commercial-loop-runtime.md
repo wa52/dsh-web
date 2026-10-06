@@ -125,10 +125,21 @@ OpenCode 的大上下文按文件字节数、行长度和行数切分为多个�
 - 失败关闭：登记表为空、格式非法、或没有符合层级的可用模型时抛出 `RoutingError`，该行动按 `FAILED` 处理；不会把 provider 标记为离线，也不会触发无意义的额度交接。
 - 每次调用把 `task.model` 传给四个原生 adapter；`config.model` 只在路由关闭时作为回退。登记表存在但显式 `autoModelRouting: false` 时，静态 `config.model` 也必须是可用的登记项。
 - 路由证据以 `{ selectedModel, provider, reason, inputs, at }` 保存在行动、决策与每次运行记录上，并随 `/api/state` 的 `view()` 暴露，便于核查。
-- `quotaGroup` 由 Host 声明（例如把 Codex-backed Pi 与 Codex 设为同一组）；同组任一 Worker 离线时组内全部视为不可用，Codex 与 Pi 不会被当成两份独立预算。未声明时不做任何假设。
+- `quotaGroup` 由 Host 声明（例如把 Codex-backed Pi 与 Codex 设为同一组）；只有显式额度错误会让同组全部视为不可用，Codex 与 Pi 不会被当成两份独立预算。未声明时不做任何假设。
 - 路由只为已经选定的 Worker（包括独立 Reviewer）选择模型，不改变审核者选择；Builder 仍然不能选择自己的 Reviewer，额度交接、权限与最终 Gate 都不受影响。
 
-限制：路由完全由登记表驱动，不主张任何 provider 的额度数量或可用性；示例模型 id 需替换为真实配置；当前超时与额度耗尽都会折叠为同一个 offline 标记。
+### 失败分类与额度交接
+
+运行时将失败按来源分类，避免一次超时或本地启动/传输错误就推断整个账户额度耗尽：
+
+- `timeout`：单次调用超过 `agentTimeoutMs`（消息为 `Agent run budget exceeded`）。只记为该次调用失败，不把 provider 或同 `quotaGroup` 成员标记为离线。
+- `transport`/`spawn`：本地可执行文件缺失、Windows 监管进程 `CreateProcess` 失败、连接/传输错误（`ENOENT`、`ECONNREFUSED`、`ETIMEDOUT` 等）。同样不推断账户额度耗尽。
+- `quota`：协议返回 `Usage limit exceeded`、`quota exceeded/exhausted`、`insufficient_quota` 等。此时才将 adapter 设为 `offline`，并通过 `quotaGroup` 传播到同组所有成员。
+- `length`：OpenCode 等原生帧报告 `finishReason=length`/`max_tokens` 且可见输出为零。保留 `finishReason` 与 usage 计数器作为输出耗尽证据，不保存隐藏推理内容；普通空输出仍按原 `Empty research response` 处理。
+
+商业 Loop 在确认 Worker 停止后才进行额度交接。交接记录保存 `from/to/attempt/failureKind` 以及下一次运行的路由证据（所选模型、原因、输入）。同一行动继续时，优先换用不同 provider 的可用模型；同 provider 失败则通过 `escalate` 尝试更强 eligible tier，不会降层、不会调用 `prohibited` 模型、也不会无限重试同一失败模型。部分工作区与 Builder 身份历史保留给接续者和审核者。
+
+独立商业审核在确认失败 Reviewer 停止后，依次尝试所有剩余 eligible 独立 Reviewer；Builder 及所有 Builder 身份被排除，Reviewer 只读，遇到 `STOP_UNCONFIRMED` 或全部耗尽时关闭失败，不会把 NEED_RESEARCH/PARTIAL/失败审核改为 PASS。
 
 ## 尚未证明的能力
 
