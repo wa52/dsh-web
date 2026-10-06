@@ -2,7 +2,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { atomicJson } from './store.mjs';
-import { redact } from './process.mjs';
+import { redact, classifyFailure } from './process.mjs';
 import { readBenchmark } from './research.mjs';
 
 export const COMMERCIAL_OUTCOMES = ['PASS', 'BLOCKED', 'PARTIAL', 'WRONG_DIRECTION', 'NEED_RESEARCH', 'REGRESSION'];
@@ -123,16 +123,16 @@ export class CommercialLoop {
     const task = { role: 'review', workspace: tree.directory, actionId: id, outputSchema: auditShape,
       prompt: `Independently audit the ${stage} alignment analysis. You are not its author or this action's Builder. Verify selection/suitability of benchmarks, actual alignment, evidence and recommendations; no files may change. PASS here means this stage is adequately checked, NOT that the whole product is commercial-ready. ${stageAuditContract(stage)} Reference URLs alone are not proof: consider verified source text and project evidence. Return NEED_RESEARCH when evidence is insufficient, WRONG_DIRECTION for a bad route, REGRESSION for introduced failures, or PARTIAL/BLOCKED as appropriate. Stage audit must never override Host tests, protected files or the mandatory candidate review.\nAnalysis:\n${notes.text}\nEvidence:\n${JSON.stringify(context)}` };
     const attemptedReviewers = [];
-    let audit, lastError;
+    let audit, reviewer, lastError;
     while (true) {
-      let reviewer;
       try { reviewer = r.registry.select({ role: 'review', capabilities: ['review'], exclude: [...excluded, ...attemptedReviewers] }, r.state.agentPerformance); }
       catch (error) { throw new Error(`REVIEWER_EXHAUSTION: no eligible independent reviewer after ${attemptedReviewers.length} attempts${lastError ? `; last: ${redact(lastError.message)}` : ''}`); }
       attemptedReviewers.push(reviewer.id);
       try { audit = await r.execute(reviewer, task); break; }
       catch (error) {
         if (String(error.message).includes('STOP_UNCONFIRMED')) throw error;
-        if (!r.registry.isUnavailable(reviewer.id)) throw error;
+        const classifiedKind = error.failureKind ?? classifyFailure(error).kind;
+        if (!['quota', 'transport'].includes(classifiedKind) && !r.registry.isUnavailable(reviewer.id)) throw error;
         lastError = error;
       }
     }

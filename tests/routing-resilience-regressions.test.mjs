@@ -65,7 +65,7 @@ function processTask(root, overrides = {}) {
 test('one invocation timeout is typed and does not quarantine shared-account peers', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-timeout-classification-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const adapter = new ProcessAdapter({ id: 'codex', provider: 'codex', quotaGroup: 'shared-codex-account', availability: 'online' }, async task => ({
+  const adapter = new ProcessAdapter({ id: 'codex', provider: 'codex', quotaGroup: 'shared-codex-account', availability: 'online', roles: ['build'], capabilities: ['code'] }, async task => ({
     executable: process.execPath,
     args: ['-e', 'setTimeout(() => {}, 5000)', task.runKey],
     finish: () => ({}),
@@ -82,7 +82,7 @@ test('one invocation timeout is typed and does not quarantine shared-account pee
   } finally { await handle.dispose(); }
   assert.notEqual(adapter.availability, 'offline', 'an invocation timeout is not account quota evidence');
   assert.equal(registry.isUnavailable('pi'), false, 'a timeout must not quarantine the actual quotaGroup peer');
-  assert.equal(registry.select({ role: 'build', capabilities: ['code'] }).id, 'pi');
+  assert.equal(registry.select({ role: 'build', capabilities: ['code'], exclude: ['codex'] }).id, 'pi');
 });
 
 test('local spawn/transport failure does not falsely quarantine shared-account peers', async t => {

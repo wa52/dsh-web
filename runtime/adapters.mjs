@@ -11,7 +11,7 @@ const guardModule = pathToFileURL(fileURLToPath(new URL('./permissions.mjs', imp
 
 export function decodeAnswer(answer, format) {
   if (format !== 'text') return parseObject(answer);
-  if (typeof answer !== 'string' || !answer.trim()) throw new Error('Empty research response');
+  if (typeof answer !== 'string' || !answer.trim()) throw Object.assign(new Error('Empty research response'), { failureKind: 'empty-output' });
     return { text: answer };
 }
 

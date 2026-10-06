@@ -134,7 +134,7 @@ export class ProjectRuntime extends EventEmitter {
       security: task.security,
       risk: task.risk,
       escalate: task.escalate,
-      unavailable: this.unavailableProviders(),
+      unavailable: [...this.unavailableProviders(), ...(task.unavailableModels ?? [])],
     }, catalog);
     return { selectedModel: selection.selectedModel, provider: selection.provider, reason: selection.reason, inputs: selection.inputs, at: new Date().toISOString() };
   }
@@ -155,21 +155,43 @@ export class ProjectRuntime extends EventEmitter {
     let handoff;
     while (true) {
       attempted.push(agent.id);
+      const outerOnRouting = task.onRouting;
+      let attemptRouting;
+      const attemptTask = { ...task, onRouting: routing => {
+        attemptRouting = routing;
+        outerOnRouting?.(routing);
+        if (handoff) {
+          handoff.routing = routing;
+          handoff.selectedModel = routing.selectedModel;
+          handoff.routingReason = routing.reason;
+        }
+      } };
       try {
-        const result = await this.execute(agent, task);
-        if (handoff) { handoff.status = 'completed'; await this.checkpoint(); }
+        const result = await this.execute(agent, attemptTask);
+        if (handoff) { handoff.status = 'resuming'; handoff.selectedModel ??= attemptRouting?.selectedModel; handoff.routingReason ??= attemptRouting?.reason; await this.checkpoint(); }
         this.state.sharedWorker = agent.id;
         return { ...result, worker: agent.id };
       } catch (error) {
         if (handoff) handoff.status = 'failed';
-        if (agent.availability !== 'offline' || safeError(error).includes('STOP_UNCONFIRMED')) throw error;
+        const failureKind = error.failureKind ?? classifyFailure(error).kind;
+        const continuable = ['length', 'empty-output', 'timeout', 'quota', 'transport'].includes(failureKind) || agent.availability === 'offline';
+        if (!continuable || safeError(error).includes('STOP_UNCONFIRMED')) {
+          if (handoff) {
+            handoff.routingError = safeError(error);
+            await this.checkpoint();
+          }
+          throw error;
+        }
         const snapshot = await this.worktrees.snapshot(task.workspace);
         const attempt = attempted.length;
-        handoff = { id: randomUUID(), from: agent.id, to: null, attempt, role: task.role, actionId: task.actionId, workspace: task.workspace, snapshotHash: snapshot.hash, error: safeError(error), failureKind: error.failureKind ?? classifyFailure(error).kind, at: new Date().toISOString(), status: 'waiting' };
+        const failedModels = [...new Set([...(task.unavailableModels ?? []), ...(attemptRouting?.selectedModel ? [attemptRouting.selectedModel] : [])])];
+        handoff = { id: randomUUID(), from: agent.id, to: null, attempt, role: task.role, actionId: task.actionId, workspace: task.workspace, snapshotHash: snapshot.hash, error: safeError(error), failureKind, finishReason: error.finishReason, usage: error.usage, failedModel: attemptRouting?.selectedModel, failureRouting: attemptRouting, unavailableModels: failedModels, at: new Date().toISOString(), status: 'waiting' };
         this.state.handoffs ??= []; this.state.handoffs.push(handoff);
         await atomicJson(path.join(this.store.directory, 'evidence', handoff.id, 'checkpoint.json'), { ...handoff, snapshot, goal: this.state.goal, prompt: task.prompt, latestAlignment: this.lastAlignment?.text });
         await this.checkpoint();
-        const next = this.sharedWorker(task.role, task.role === 'build' ? task.capabilities ?? [] : ['reason'], attempted);
+        let next;
+        try { next = this.sharedWorker(task.role, task.role === 'build' ? task.capabilities ?? [] : ['reason'], attempted); }
+        catch (routingError) { handoff.status = 'failed'; handoff.routingError = safeError(routingError); await this.checkpoint(); throw routingError; }
         if ((await this.worktrees.snapshot(task.workspace)).hash !== snapshot.hash) throw new Error('Handoff workspace changed before takeover');
         if (task.role === 'build') {
           const action = this.state.actions.find(action => action.id === task.actionId);
@@ -181,8 +203,7 @@ export class ProjectRuntime extends EventEmitter {
         handoff.to = next.id; handoff.status = 'resuming';
         this.state.sharedWorker = next.id;
         await this.checkpoint();
-        const outerOnRouting = task.onRouting;
-        task = { ...task, escalate: next.provider === agent.provider ? true : task.escalate, prompt: `${task.prompt}\nHandoff: ${agent.id} exhausted quota/unavailable after confirmed stop. Continue this SAME action in the preserved workspace; inspect existing partial changes, do not restart blindly. Previous error: ${handoff.error}. Snapshot: ${snapshot.hash}. Do not commit or schedule another task.`, onRouting: routing => { handoff.routing = routing; outerOnRouting?.(routing); } };
+        task = { ...task, unavailableModels: failedModels, escalate: true, prompt: `${task.prompt}\nHandoff: ${agent.id} failed with ${failureKind} after confirmed stop. Continue this SAME action in the preserved workspace; inspect existing partial changes, do not restart blindly. Previous error: ${handoff.error}. Snapshot: ${snapshot.hash}. Do not commit or schedule another task.` };
         agent = next;
       }
     }
