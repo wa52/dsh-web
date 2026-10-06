@@ -8,24 +8,42 @@ import { createAgentAdapter } from './adapters.mjs';
 import { REVIEW_SHAPE } from './decision.mjs';
 
 /** Recovery is host-owned: stop verified processes before reopening a crashed project. */
-export async function recoverInterruptedProject(config) {
+export async function recoverInterruptedProject(config, { controllerTermination, verifyControllerDescendants } = {}) {
   const store = new WorldStore(config.stateDir);
   await mkdir(store.directory, { recursive: true });
   const recoveryFile = path.join(store.directory, 'recovery.lock');
   const recoveryLock = await open(recoveryFile, 'wx');
   try {
   const lockPath = path.join(store.directory, 'runtime.lock');
+  let lock;
   try {
-    const lock = JSON.parse(await readFile(lockPath, 'utf8'));
+    lock = JSON.parse(await readFile(lockPath, 'utf8'));
     const live = await processFingerprint(lock.pid);
-    if (live && (!lock.fingerprint || live === lock.fingerprint)) throw new Error('Controller process still exists; refusing to steal lock');
+    if (live && lock.fingerprint && live !== lock.fingerprint) throw new Error('Controller PID was reused; refusing to steal lock');
+    if (live) throw new Error('Controller process still exists; refusing to steal lock');
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (controllerTermination) {
+    const proof = controllerTermination;
+    if (proof.confirmed !== true || proof.closed !== true || !Number.isSafeInteger(proof.pid) || proof.pid < 1 || (proof.fingerprint !== null && (typeof proof.fingerprint !== 'string' || !proof.fingerprint))) {
+      throw new Error('Confirmed controller termination evidence required for supervised recovery');
+    }
+    const current = await processFingerprint(proof.pid);
+    if (current && proof.fingerprint && current !== proof.fingerprint) throw new Error(`Controller PID ${proof.pid} was reused; refusing supervised recovery`);
+    if (current) throw new Error('Supervised controller is still alive; refusing recovery');
+    if (lock && (lock.pid !== proof.pid || !proof.fingerprint || lock.fingerprint !== proof.fingerprint)) {
+      throw new Error('Controller lock ownership conflicts with the supervised process; refusing recovery');
+    }
+  }
   const state = await store.load();
   if (!state) throw new Error('No project state to recover');
   for (const run of state.runs.filter(run => !run.stoppedAt)) {
     if (run.pid) await stopRecordedRun(run);
     else if (run.launchToken) for (const record of await findLaunchProcesses(run.launchToken)) await stopRecordedRun(record);
+    else throw new Error('Unconfirmed Worker run has neither a PID nor a launch token; refusing recovery');
     run.status = 'interrupted'; run.stoppedAt = new Date().toISOString();
+  }
+  if (controllerTermination && typeof verifyControllerDescendants === 'function') {
+    await verifyControllerDescendants(controllerTermination.pid);
   }
   const action = state.actions.at(-1);
   if (action && ['BUILDING', 'HALTED'].includes(action.phase)) {

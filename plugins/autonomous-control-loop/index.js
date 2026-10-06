@@ -6,6 +6,7 @@ export { createDshWorker } from './dsh-worker.js';
 export { gitSnapshot } from './git-snapshot.js';
 export { ProjectRuntime } from '../../runtime/project.mjs';
 export { createAgentAdapter } from '../../runtime/adapters.mjs';
+export { runSupervisedController } from '../../runtime/supervisor.mjs';
 
 export const name = 'autonomous-control-loop';
 

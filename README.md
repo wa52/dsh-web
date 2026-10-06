@@ -71,7 +71,59 @@ Windows 建议配置原生 `.exe` 的绝对路径，或 `executable: "node"` 加
 - `node scripts/watchdog.mjs recovery-config.json` 是独立于 DSH 启动的最小恢复入口。
   必须配置 `harness.executable/args` 和 `recovery.enabled/repository/codex/tests/protectedPaths`。
   独立 Codex 修复、Host 测试、另一只读 Codex 审核后，才允许从候选 worktree 重启；
-  `recovery.restartFromWorktree` 默认关闭。
+   `recovery.restartFromWorktree` 默认关闭。
+
+## 外部 Controller Supervisor
+
+无干预实验可由 Host 在独立进程中只启动一次 Controller。`runSupervisedController()`
+观察真实子进程的 stdout/stderr、exit code、signal、spawn failure 和最后持久化 Loop phase；
+输出按字节截尾并脱敏。结果原子写入独立的 `supervisor-result.json`，不会覆盖 acceptance
+报告。退出码为 0 但缺少有效 final report、final report 未在本次运行中产生/更新，或报告自身为
+FAIL，仍为 FAIL；只有子进程关闭后，Supervisor 才会调用
+既有恢复流程停止并核实所有有 PID/launch-token 记录的 Worker。锁冲突、PID 重用或 Worker
+停止无法确认时保留原状态和锁，并在 Supervisor 结果中记录恢复受阻。
+
+CLI 配置是 JSON，路径相对配置文件所在目录解析；凭证由继承的 provider CLI 环境提供，不能写入此文件：
+
+```json
+{
+  "executable": "node",
+  "args": ["<unchanged SupportDesk acceptance entry point>", "<its existing arguments>"],
+  "cwd": "<SupportDesk repository root>",
+  "stateDir": "<the same external stateDir used by the Controller>",
+  "finalReportPath": "<the unchanged acceptance entry point's final report>",
+  "resultPath": "<external stateDir>/supervisor-result.json",
+  "outputLimitBytes": 32768
+}
+```
+
+从该配置文件目录运行：
+
+```sh
+node <path-to-this-checkout>/scripts/supervise-controller.mjs supportdesk-supervisor.json
+```
+
+API 等价接法（适用于原生 Host composition）：
+
+```js
+import { runSupervisedController } from './runtime/supervisor.mjs';
+import path from 'node:path';
+
+const result = await runSupervisedController({
+  executable: process.execPath,
+  args: [existingSupportDeskAcceptanceEntry, ...existingSupportDeskArguments],
+  cwd: supportDeskRepositoryRoot,
+  stateDir: supportDeskStateDir,
+  finalReportPath: existingSupportDeskFinalReport,
+  resultPath: path.join(supportDeskStateDir, 'supervisor-result.json'),
+});
+if (result.status !== 'PASS') process.exitCode = 1;
+```
+
+`existingSupportDeskAcceptanceEntry`、原参数、brief/API/browser checks、Controller 配置及
+final-report 写入逻辑保持原样；只把原来直接启动该 entry point 的 Host 命令替换为上述 CLI
+配置或 API 调用。Supervisor 不重试、不调用修复 Agent，也不更换模型。此接线修复的是进程
+退出证据与安全恢复，不代表未知的 2026-10-06 DECIDE 退出触发原因已找到或 SupportDesk 已通过验收。
 
 权限通过原生 Codex sandbox、OpenCode permission、Pi tool hook、DSH sandbox 和 tool guard 实现。
 2026-10-04 的真实电商压力验收发现：原生 Codex CLI 仍继承了 MCP JS 工具，
