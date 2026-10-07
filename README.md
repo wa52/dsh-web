@@ -34,15 +34,28 @@ npm test
 npm start
 ```
 
-打开 http://127.0.0.1:4780。未配置项目时显示空观察界面。
-复制 `config.example.json` 为 `config.local.json`，设置已有 Git 仓库、仓库外的 stateDir、
-目标、成功标准、受保护测试路径和 Host 测试 argv，再运行：
+打开 http://127.0.0.1:4780。Web 模式控制台提供两个模式：
+
+- **普通对话**：直接调用 DeepSeek Harness 原生 agent-loop，持久化 session，
+  多轮对话、事件流和停止确认都在该模式下完成；不进入项目 Loop。
+- **自主项目**：现有的自定义自治项目/商业 Loop，包含独立审核、World State 和受控执行。
+
+两种模式的会话与存储相互隔离。运行中切换模式会被阻止，直到当前工作确认停止。
+未配置项目时，可在界面中填写产品目标、仓库、外部 state 目录、成功标准、
+Host 测试可执行文件与参数、行动预算等；配置会经过校验并脱敏持久化到 stateDir，
+不包含任何凭证、API key 或付费授权。
+
+仍可通过命令行直接启动项目 Loop：
 
 ```sh
 npm start -- --config config.local.json
 # 或运行有行动数量上限的 CLI：
 node runtime/cli.mjs --config config.local.json --run
 ```
+
+Web host 模式下的可用 Agent 别名从 `config.host.json` 或 `--host-agents` 读取；
+若不存在则使用保守默认（OpenCode Go 启用，其余禁用），实际登录凭证继续由各自 CLI
+环境提供，不会写入浏览器可修改的配置。
 
 Windows 建议配置原生 `.exe` 的绝对路径，或 `executable: "node"` 加
 `argsPrefix: ["CLI入口的绝对路径"]`；不执行 `.cmd`、`.bat` 和拼接 shell 命令。

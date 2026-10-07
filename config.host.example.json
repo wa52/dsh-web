@@ -1,0 +1,8 @@
+{
+  "agents": {
+    "opencodeGo": { "transport": "opencode", "connectionId": "opencode-go", "executable": "opencode", "enabled": true, "capabilities": ["code", "debug", "ui", "review", "reason"] },
+    "dsh": { "enabled": false, "transport": "dsh", "connectionId": "dsh", "provider": "deepseek-official", "model": "deepseek-v4-flash", "capabilities": ["code", "debug", "ui", "review", "reason"] },
+    "pi": { "transport": "pi", "connectionId": "pi", "executable": "pi", "enabled": false, "capabilities": ["code", "debug", "ui", "review", "reason"] },
+    "codex": { "transport": "codex", "connectionId": "codex", "executable": "codex", "enabled": false, "capabilities": ["code", "debug", "ui", "review", "reason"] }
+  }
+}

@@ -1,17 +1,62 @@
 const $ = id => document.getElementById(id);
 const phases = ['OBSERVE', 'DECIDE', 'DISPATCH', 'BUILD', 'REVIEW', 'UPDATE', 'REPLAN', 'STOP'];
-const text = (element, value) => { element.textContent = value ?? '—'; };
+const text = (element, value) => { if (element) element.textContent = value ?? '—'; };
 const node = (tag, value, className) => { const element = document.createElement(tag); if (value !== undefined) text(element, value); if (className) element.className = className; return element; };
 let latest;
+let hostMode = 'native';
+let nativeConnected = false;
 
 function render(data) {
   latest = data;
+  const isDirectProject = data.world !== undefined;
+  const host = isDirectProject ? null : (data.host ?? {});
+  if (isDirectProject) {
+    // Legacy server mode: payload is the project runtime view directly.
+    renderProject(data);
+    for (const id of ['native-panel', 'setup-panel', 'mode-native', 'mode-project']) { const el = $(id); if (el) el.hidden = true; }
+    $('project-panel').hidden = false;
+    const controls = $('project-controls'); if (controls) { controls.hidden = false; controls.style.position = 'static'; }
+    return;
+  }
+  hostMode = host.mode ?? 'native';
+  updateModeTabs();
+  $(`mode-label`) && text($('mode-label'), hostMode === 'native' ? '普通对话' : '自主项目');
+  text($('status'), host.projectConfigured ? '已配置' : '未配置');
+
+  if (host.native) {
+    const st = host.native.state ?? 'idle';
+    const statusEl = $('native-status');
+    if (statusEl) { text(statusEl, st === 'streaming' ? '响应中…' : st === 'connecting' ? '连接中…' : st === 'error' ? `错误: ${host.native.lastError ?? '未知'}` : st === 'idle' ? '就绪' : st); statusEl.className = `tag${st === 'error' ? ' danger' : st === 'streaming' ? ' running' : ''}`; }
+    $('native-send').disabled = st === 'connecting' || st === 'streaming';
+    $('native-stop').disabled = st !== 'streaming';
+    nativeConnected = st === 'idle' || st === 'streaming';
+  }
+
+  if (host.projectConfigured && host.project) renderProject(host.project);
+}
+
+function updateModeTabs() {
+  for (const mode of ['native', 'project', 'setup']) {
+    const panel = $(`${mode}-panel`);
+    if (panel) panel.hidden = mode !== hostMode && !(mode === 'setup' && hostMode === 'project' && !latest?.host?.projectConfigured);
+  }
+  const setupPanel = $('setup-panel');
+  if (setupPanel) setupPanel.hidden = !(hostMode === 'project' && !latest?.host?.projectConfigured);
+  const projectControls = $('project-controls');
+  if (projectControls) projectControls.hidden = hostMode !== 'project' || !latest?.host?.projectConfigured;
+  for (const mode of ['native', 'project']) {
+    const tab = $(`mode-${mode}`);
+    if (tab) { tab.setAttribute('aria-selected', String(hostMode === mode)); tab.classList.toggle('active', hostMode === mode); }
+  }
+}
+
+function renderProject(data) {
   const world = data.world;
   const activePhase = world?.phase === 'REVIEW_REQUIRED' ? 'REVIEW' : world?.phase ?? 'STOP';
-  text($('goal'), world?.goal ?? '配置一个项目，开始观察');
-  text($('repository'), world?.project.repository ?? '使用 npm start -- --config project.json 连接项目。');
-  text($('health'), world ? `${Math.round(world.projectHealth * 100)}%` : '—');
-  text($('status'), world?.status ?? '未配置'); text($('phase-label'), world?.phase ?? 'STOP');
+  text($('project-goal'), world?.goal ?? '配置一个项目，开始观察');
+  text($('project-repository'), world?.project.repository ?? '项目未连接');
+  text($('project-health'), world ? `${Math.round(world.projectHealth * 100)}%` : '—');
+  text($('project-status'), world?.status ?? '未配置'); text($('phase-label'), world?.phase ?? 'STOP');
   text($('head'), world?.acceptedHead ? `ACCEPTED ${world.acceptedHead.slice(0, 10)}` : '尚无已接受版本');
   $('flow').replaceChildren(...phases.map(phase => node('div', phase, `flow-step${phase === activePhase ? ' active' : ''}${phase === 'REVIEW' ? ' gate' : ''}`)));
   const gaps = [...(world?.gaps ?? [])].sort((a, b) => b.priority - a.priority);
@@ -64,7 +109,103 @@ function render(data) {
   if (world?.lastError) text($('message'), world.lastError);
 }
 
-for (const action of ['start', 'pause', 'cancel']) $(action).addEventListener('click', async () => {
+async function post(endpoint, body) {
+  const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-DSH-Control': '1' }, body: JSON.stringify(body) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+  return data;
+}
+
+async function setMode(mode) {
+  try {
+    await post('/api/mode', { mode });
+    text($('message'), `已切换到${mode === 'native' ? '普通对话' : '自主项目'}模式。`);
+  } catch (error) { text($('message'), error.message); }
+}
+
+$('mode-native')?.addEventListener('click', () => setMode('native'));
+$('mode-project')?.addEventListener('click', () => setMode('project'));
+
+// Native chat
+const nativeMessages = $('native-messages');
+function appendNative(role, content) {
+  const bubble = node('div', undefined, `chat-bubble ${role}`);
+  bubble.append(node('strong', role === 'user' ? '你' : 'DSH'), node('p', content));
+  nativeMessages.append(bubble);
+  nativeMessages.scrollTop = nativeMessages.scrollHeight;
+}
+
+$('native-form')?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const prompt = $('native-prompt').value.trim();
+  if (!prompt) return;
+  appendNative('user', prompt);
+  $('native-prompt').value = '';
+  try {
+    const start = !$('native-status')?.textContent?.includes('就绪');
+    if (start) {
+      await post('/api/native/start', {
+        workspace: $('native-workspace').value || '.',
+        provider: $('native-provider').value || 'deepseek-official',
+        model: $('native-model').value || 'deepseek-v4-flash',
+      });
+    }
+    await post('/api/native/chat', { prompt });
+  } catch (error) { text($('message'), error.message); }
+});
+
+$('native-stop')?.addEventListener('click', async () => {
+  try { await post('/api/native/stop', {}); }
+  catch (error) { text($('message'), error.message); }
+});
+
+// Native SSE
+const nativeStream = new EventSource('/api/native/events');
+nativeStream.onmessage = event => {
+  const msg = JSON.parse(event.data);
+  if (msg.type === 'message' && msg.data.delta) {
+    const last = nativeMessages.lastElementChild;
+    if (last && last.classList.contains('assistant')) {
+      const p = last.querySelector('p');
+      p.textContent += msg.data.delta;
+    } else {
+      appendNative('assistant', msg.data.delta);
+    }
+    nativeMessages.scrollTop = nativeMessages.scrollHeight;
+  }
+  if (msg.type === 'done') {
+    const last = nativeMessages.lastElementChild;
+    if (last && last.classList.contains('assistant')) last.classList.add('done');
+  }
+  if (msg.type === 'error') text($('message'), `Native session error: ${msg.data.message ?? 'unknown'}`);
+};
+nativeStream.onerror = () => text($('connection'), '连接中断 · 自动重连');
+
+// Setup form
+$('setup-form')?.addEventListener('submit', async event => {
+  event.preventDefault();
+  const lines = id => $(id).value.split('\n').map(s => s.trim()).filter(Boolean);
+  try {
+    const config = {
+      goal: $('setup-goal').value.trim(),
+      repository: $('setup-repository').value.trim(),
+      stateDir: $('setup-stateDir').value.trim(),
+      successCriteria: lines('setup-successCriteria'),
+      constraints: lines('setup-constraints'),
+      protectedPaths: lines('setup-protectedPaths'),
+      tests: [{ executable: $('setup-testExecutable').value.trim(), args: JSON.parse($('setup-testArgs').value) }],
+      maxActions: Number($('setup-maxActions').value),
+      agentTimeoutMs: Number($('setup-agentTimeoutMs').value),
+      testTimeoutMs: Number($('setup-testTimeoutMs').value),
+      commercialLoop: $('setup-commercialLoop').checked ? { enabled: true } : { enabled: false },
+    };
+    await post('/api/project/setup', config);
+    text($('message'), '项目配置已保存。');
+  } catch (error) { text($('message'), error.message); }
+});
+
+// Project controls
+for (const action of ['start', 'pause', 'cancel']) $(action)?.addEventListener('click', async () => {
   try {
     const response = await fetch(`/api/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-DSH-Control': '1' }, body: JSON.stringify(action === 'start' ? { maxActions: Number($('budget').value) } : {}) });
     const result = await response.json();
@@ -72,6 +213,7 @@ for (const action of ['start', 'pause', 'cancel']) $(action).addEventListener('c
     const data = await (await fetch('/api/state')).json(); render(data);
   } catch { text($('message'), '控制请求失败，请检查连接。'); }
 });
+
 const stream = new EventSource('/api/events');
 stream.onmessage = event => { text($('connection'), '已连接'); render(JSON.parse(event.data)); };
 stream.onerror = () => text($('connection'), '连接中断 · 自动重连');
