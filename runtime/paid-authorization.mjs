@@ -4,6 +4,7 @@ import path from 'node:path';
 import { atomicJson } from './store.mjs';
 
 const capabilities = new WeakMap();
+const ledgerTransactions = new Map();
 const projectKey = value => createHash('sha256').update(path.resolve(value)).digest('hex');
 const ledgerPath = stateDir => path.join(path.resolve(stateDir), 'paid-api', 'ledger.json');
 const lockPath = stateDir => path.join(path.resolve(stateDir), 'paid-api', 'ledger.lock');
@@ -58,6 +59,24 @@ async function acquire(stateDir) {
 }
 
 async function updateLedger(stateDir, change) {
+  // Register before any filesystem await: an already-requested revocation must
+  // not be overtaken by a reservation in this process. The physical lock still
+  // serializes every transaction with other processes, without stealing locks.
+  const key = lockPath(stateDir);
+  const previous = ledgerTransactions.get(key);
+  let finish;
+  const pending = new Promise(resolve => { finish = resolve; });
+  ledgerTransactions.set(key, pending);
+  try {
+    await previous;
+    return await updateLockedLedger(stateDir, change);
+  } finally {
+    finish(); // A failed transaction must not poison subsequent transactions.
+    if (ledgerTransactions.get(key) === pending) ledgerTransactions.delete(key);
+  }
+}
+
+async function updateLockedLedger(stateDir, change) {
   const release = await acquire(stateDir);
   try {
     const file = ledgerPath(stateDir);
