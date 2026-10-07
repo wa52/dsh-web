@@ -12,7 +12,7 @@ function render(data) {
   const host = isDirectProject ? null : (data.host ?? {});
   if (isDirectProject) {
     // Legacy server mode: payload is the project runtime view directly.
-    renderProject(data);
+    renderProject(data, true);
     for (const id of ['native-panel', 'setup-panel', 'mode-native', 'mode-project']) { const el = $(id); if (el) el.hidden = true; }
     $('project-panel').hidden = false;
     const controls = $('project-controls'); if (controls) { controls.hidden = false; controls.style.position = 'static'; }
@@ -59,11 +59,11 @@ function updateModeTabs() {
   }
 }
 
-function renderProject(data) {
+function renderProject(data, legacy = false) {
   const world = data.world;
   const activePhase = world?.phase === 'REVIEW_REQUIRED' ? 'REVIEW' : world?.phase ?? 'STOP';
   text($('project-goal'), world?.goal ?? '配置一个项目，开始观察');
-  text($('project-repository'), world?.project.repository ?? '项目未连接');
+  text($('project-repository'), world?.project.repository ?? (legacy ? '使用 npm start -- --config project.json 连接项目。' : '填写上方项目设置表单，保存后启动 Loop。'));
   text($('project-health'), world ? `${Math.round(world.projectHealth * 100)}%` : '—');
   text($('project-status'), world?.status ?? '未配置'); text($('phase-label'), world?.phase ?? 'STOP');
   text($('head'), world?.acceptedHead ? `ACCEPTED ${world.acceptedHead.slice(0, 10)}` : '尚无已接受版本');

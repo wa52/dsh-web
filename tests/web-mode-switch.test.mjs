@@ -393,3 +393,22 @@ test('Web setup defaults to commercial loop with an enabled Host worker alias', 
   assert.equal(host.projectRuntime.config.commercialLoop.worker, 'authorized');
   assert.equal(host.view().projectWorld.world.goal, 'fixture');
 });
+
+test('HTTP setup rejects browser account and funding overrides before project creation', async t => {
+  const { post, host, repository, stateDir } = await serverFixture(t);
+  const trusted = structuredClone(host.hostAgents);
+  const config = { goal: 'fixture', repository, stateDir, successCriteria: ['pass'], tests: [{ executable: 'node', args: [] }] };
+  for (const field of ['connectionId', 'accountId', 'quotaGroup', 'funding', 'apiKeyEnv', 'openCodeProvider']) {
+    const result = await post('/api/project/setup', { ...config, agents: { opencodeGo: { enabled: true, [field]: 'browser-override' } } });
+    assert.equal(result.status, 400, field);
+    assert.match(result.data.error, /Host-owned/, field);
+    assert.equal(host.projectRuntime, null, field);
+    assert.equal(host.projectConfig, null, field);
+    assert.deepEqual(host.hostAgents, trusted, field);
+    await assert.rejects(readFile(path.join(stateDir, 'dsh-web-project.json')), { code: 'ENOENT' });
+  }
+  const valid = await post('/api/project/setup', config);
+  assert.equal(valid.status, 200);
+  assert.equal(host.projectConfig.commercialLoop.enabled, true);
+  assert.deepEqual(host.hostAgents, trusted);
+});
