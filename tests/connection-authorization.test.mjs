@@ -502,6 +502,161 @@ test('real high-risk review fallback retains security capability and excludes ev
   assert.equal(ledger.reservations.length, 0);
 });
 
+test('real execute refreshes exhausted paid eligibility and falls back before another paid start', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-paid-execute-fallback-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const project = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const fixture = await createCheckoutFixture(project);
+  const models = [
+    { id: 'paid-fixture', provider: 'opencode', connectionId: 'paid-connection', tier: 'routine', paid: true, endpoint: EXAMPLE_ENDPOINT },
+    { id: 'funded-fixture', provider: 'opencode', connectionId: 'funded-connection', tier: 'routine' },
+  ];
+  await createPaidApiGrant(stateDir, {
+    project, connectionId: 'paid-connection', models: ['paid-fixture'], endpoint: EXAMPLE_ENDPOINT,
+    expiresAt: '2099-01-01T00:00:00Z', maxWorkerRuns: 1,
+  });
+  const starts = [];
+  const paid = tdAgent({ id: 'paid-worker', provider: 'opencode', connectionId: 'paid-connection', model: 'paid-fixture',
+    paidApi: { endpoint: EXAMPLE_ENDPOINT }, openCodeProvider: { id: 'paid-fixture-provider', name: 'Paid fixture', baseURL: EXAMPLE_ENDPOINT }, roles: ['build'],
+    behavior: async task => { starts.push({ worker: 'paid', model: task.model }); return { id: task.runKey, result: Promise.resolve({ summary: 'paid fixture' }), dispose: async () => {} }; } });
+  const funded = tdAgent({ id: 'funded-worker', provider: 'opencode', connectionId: 'funded-connection', model: 'funded-fixture', roles: ['build'],
+    behavior: async task => { starts.push({ worker: 'funded', model: task.model }); return { id: task.runKey, result: Promise.resolve({ summary: 'funded fixture' }), dispose: async () => {} }; } });
+  const runtime = new ProjectRuntime({ ...fixture, stateDir, models,
+    tests: [{ executable: process.execPath, args: ['--test', 'tests/acceptance.test.mjs'] }],
+    protectedPaths: ['tests/acceptance.test.mjs'],
+  }, { agents: [paid, funded] });
+  await runtime.initialize();
+
+  await runtime.execute(paid, { role: 'build', workspace: project, prompt: 'local fixture', capabilities: ['code'] });
+  await runtime.execute(paid, { role: 'build', workspace: project, prompt: 'local fixture', capabilities: ['code'] });
+
+  assert.deepEqual(starts, [
+    { worker: 'paid', model: 'paid-fixture' },
+    { worker: 'funded', model: 'funded-fixture' },
+  ]);
+  const ledger = JSON.parse(await readFile(path.join(stateDir, 'paid-api', 'ledger.json'), 'utf8'));
+  assert.equal(ledger.grants[0].consumedWorkerRuns, 1);
+  assert.deepEqual(ledger.reservations.map(row => row.connectionId), ['paid-connection']);
+});
+
+test('real execute refreshes after a paid reservation loses a concurrent revocation race', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-paid-revocation-fallback-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const project = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const fixture = await createCheckoutFixture(project);
+  const models = [
+    { id: 'revoked-paid-fixture', provider: 'opencode', connectionId: 'revoked-paid', tier: 'routine', paid: true, endpoint: EXAMPLE_ENDPOINT },
+    { id: 'revocation-funded-fixture', provider: 'opencode', connectionId: 'revocation-funded', tier: 'routine' },
+  ];
+  const grant = await createPaidApiGrant(stateDir, {
+    project, connectionId: 'revoked-paid', models: ['revoked-paid-fixture'], endpoint: EXAMPLE_ENDPOINT,
+    expiresAt: '2099-01-01T00:00:00Z', maxWorkerRuns: 1,
+  });
+  let paidStarts = 0;
+  let fundedStarts = 0;
+  const paid = tdAgent({ id: 'revoked-paid-worker', provider: 'opencode', connectionId: 'revoked-paid', model: 'revoked-paid-fixture',
+    paidApi: { endpoint: EXAMPLE_ENDPOINT }, openCodeProvider: { id: 'revoked-paid-provider', name: 'Revoked paid fixture', baseURL: EXAMPLE_ENDPOINT }, roles: ['build'],
+    behavior: async task => { paidStarts++; return { id: task.runKey, result: Promise.resolve({ summary: 'unexpected paid start' }), dispose: async () => {} }; } });
+  const funded = tdAgent({ id: 'revocation-funded-worker', provider: 'opencode', connectionId: 'revocation-funded', model: 'revocation-funded-fixture', roles: ['build'],
+    behavior: async task => { fundedStarts++; return { id: task.runKey, result: Promise.resolve({ summary: 'funded fallback' }), dispose: async () => {} }; } });
+  const runtime = new ProjectRuntime({ ...fixture, stateDir, models,
+    tests: [{ executable: process.execPath, args: ['--test', 'tests/acceptance.test.mjs'] }],
+    protectedPaths: ['tests/acceptance.test.mjs'],
+  }, { agents: [paid, funded] });
+  await runtime.initialize();
+  const resolve = runtime.resolveAgentForTask.bind(runtime);
+  let revocation;
+  runtime.resolveAgentForTask = (initial, task) => {
+    const selected = resolve(initial, task);
+    if (!revocation && selected.agent === paid) revocation = revokePaidApiGrant(stateDir, grant.id);
+    return selected;
+  };
+
+  await runtime.execute(paid, { role: 'build', workspace: project, prompt: 'local revocation fixture', capabilities: ['code'] });
+  await revocation;
+
+  assert.equal(paidStarts, 0, 'the stale paid choice is denied before adapter preparation');
+  assert.equal(fundedStarts, 1, 'execute retries a funded peer after refreshing the revoked grant');
+  const ledger = JSON.parse(await readFile(path.join(stateDir, 'paid-api', 'ledger.json'), 'utf8'));
+  assert.equal(ledger.grants[0].active, false);
+  assert.equal(ledger.grants[0].consumedWorkerRuns, 0);
+  assert.equal(ledger.reservations.length, 0);
+});
+
+test('unbound transient review failure releases its reservation and retries the same eligible identity', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-review-reservation-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const project = path.join(root, 'repo');
+  const fixture = await createCheckoutFixture(project);
+  const reviewerRuns = [];
+  const builder = tdAgent({ id: 'fixture-builder', identity: 'builder-primary', identityAliases: ['builder-session'], roles: ['build'],
+    behavior: async task => { await writeFile(path.join(task.workspace, 'candidate-note.md'), 'fixture candidate\n'); return { id: task.runKey, result: Promise.resolve({ summary: 'built' }), dispose: async () => {} }; } });
+  const reviewer = tdAgent({ id: 'independent-reviewer', identity: 'review-primary', identityAliases: ['review-session'], roles: ['review'], capabilities: ['review'],
+    behavior: async task => {
+      reviewerRuns.push(task.runKey);
+      if (reviewerRuns.length === 1) throw new Error('transient reviewer failure');
+      return { id: task.runKey, result: Promise.resolve({ verdict: 'reject', reason: 'fixture rejection', evidence: ['local fixture'], blockingRisks: ['fixture'] }), dispose: async () => {} };
+    } });
+  const runtime = new ProjectRuntime({ ...fixture, stateDir: path.join(root, 'state'), maxReviewAttempts: 3,
+    tests: [{ executable: process.execPath, args: ['--test', 'tests/acceptance.test.mjs'] }],
+    protectedPaths: ['tests/acceptance.test.mjs'],
+  }, { agents: [builder, reviewer], assessment: async () => ({ complete: false, reason: 'fixture action',
+    gaps: [{ id: 'fixture-gap', description: 'Exercise review reservation release', priority: 1, evidence: ['test fixture'] }],
+    candidates: [{ gapId: 'fixture-gap', goal: 'Create a fixture note', capabilities: ['code'], risk: 'normal', strategy: 'retry' }],
+  }) });
+  const state = await runtime.start({ maxActions: 1 });
+  const action = state.actions[0];
+  assert.equal(action.builder, builder.id, 'the Builder identity remains excluded from independent review');
+  assert.equal(reviewerRuns.length, 2);
+  assert.equal(action.reviewAttempts, 2);
+  assert.equal(action.reviews[0].reviewer, reviewer.id);
+  assert.deepEqual(action.reservedReviewerIds, [reviewer.id], 'only the bound completed reviewer reservation remains');
+  assert.deepEqual(action.reservedReviewerIdentities, ['review-primary', 'review-session']);
+});
+
+test('restart releases a persisted reviewer reservation that has no bound report', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-review-restart-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const project = path.join(root, 'repo');
+  const stateDir = path.join(root, 'state');
+  const fixture = await createCheckoutFixture(project);
+  let reviewerStarts = 0;
+  const builder = tdAgent({ id: 'restart-builder', identity: 'restart-builder-id', roles: ['build'], behavior: async () => { throw new Error('Builder must not run during review recovery'); } });
+  const reviewer = tdAgent({ id: 'restart-reviewer', identity: 'restart-reviewer-id', identityAliases: ['restart-reviewer-alias'], roles: ['review'], capabilities: ['review'],
+    behavior: async task => { reviewerStarts++; return { id: task.runKey, result: Promise.resolve({ verdict: 'pass', reason: 'recovered review', evidence: ['committed fixture'], blockingRisks: [] }), dispose: async () => {} }; } });
+  const config = { ...fixture, stateDir, tests: [{ executable: process.execPath, args: ['--test', 'tests/acceptance.test.mjs'] }], protectedPaths: ['tests/acceptance.test.mjs'] };
+  const first = new ProjectRuntime(config, { agents: [builder, reviewer] });
+  await first.initialize();
+  const tree = await first.worktrees.create(randomUUID(), 'build', first.state.acceptedHead);
+  await writeFile(path.join(tree.directory, 'restart-review-note.md'), 'committed candidate\n');
+  const commit = await first.worktrees.commit(tree, 'persist review restart fixture');
+  const snapshot = await first.worktrees.snapshot(tree.directory);
+  const action = {
+    id: randomUUID(), goal: 'Recover an unbound review reservation', risk: 'normal', builder: builder.id,
+    builderIdentity: builder.identity, builderHistory: [builder.id], builderIdentities: [builder.identity],
+    worktree: tree, acceptedBase: first.state.acceptedHead, commit, snapshot,
+    diff: await first.worktrees.diff({ ...tree, base: first.state.acceptedHead }), actionDiff: await first.worktrees.diff(tree),
+    tests: [{ passed: true }], committedTests: [{ passed: true }], protectedIntact: true,
+    phase: 'REVIEWING', reviews: [], reservedReviewerIds: [reviewer.id], reservedReviewerIdentities: [reviewer.identity, ...reviewer.identityAliases],
+  };
+  first.state.actions.push(action);
+  first.state.commits.push({ actionId: action.id, sha: commit, status: 'candidate' });
+  await first.checkpoint();
+
+  const restarted = new ProjectRuntime(config, { agents: [builder, reviewer] });
+  await restarted.initialize();
+  const recovered = restarted.state.actions.at(-1);
+  await restarted.finishReview(recovered);
+
+  assert.equal(reviewerStarts, 1, 'the previously reserved independent identity is eligible again after restart');
+  assert.equal(recovered.phase, 'MERGE_READY');
+  assert.equal(recovered.reviews[0].reviewer, reviewer.id);
+  assert.deepEqual(recovered.reservedReviewerIds, [reviewer.id]);
+  assert.deepEqual(recovered.reservedReviewerIdentities, ['restart-reviewer-id', 'restart-reviewer-alias']);
+});
+
 test('commercial alignment records the actual funded fallback reviewer and excludes Builder aliases', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-commercial-review-fallback-'));
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -90,6 +90,10 @@ export class ProjectRuntime extends EventEmitter {
         : models.filter(model => model.paid && model.eligible !== false && model.connectionId === connectionId && model.endpoint.replace(/\/$/, '') === paidEndpoint);
       for (const model of candidates) requirements.push({ connectionId, modelId: model.id, endpoint: model.endpoint });
     }
+    if (!requirements.length) {
+      this.paidModelEligibility = new Set();
+      return;
+    }
     this.paidModelEligibility = new Set(await eligiblePaidConnections({ stateDir: this.store.directory, project: this.repository, requirements }));
   }
 
@@ -399,11 +403,34 @@ export class ProjectRuntime extends EventEmitter {
   }
 
   async execute(agent, task) {
-    const resolved = this.resolveAgentForTask(agent, task);
-    agent = resolved.agent;
-    const routing = resolved.routing;
-    await task.onWorkerSelected?.(agent);
     const runKey = randomUUID();
+    let routing;
+    let paidApiAuthorization;
+    let resolutionTask = task;
+    while (true) {
+      await this.refreshPaidEligibility();
+      const resolved = this.resolveAgentForTask(agent, resolutionTask);
+      agent = resolved.agent;
+      routing = resolved.routing;
+      const selectedModel = routing?.selectedModel ?? task.model ?? agent.model;
+      if (!agent.paidApi) break;
+      try {
+        paidApiAuthorization = await reservePaidApiRun({ stateDir: this.store.directory, connectionId: agent.connectionId ?? agent.id, modelId: selectedModel, endpoint: agent.paidApi.endpoint, project: this.repository, runId: runKey });
+        break;
+      } catch (error) {
+        if (error.failureKind !== 'authorization-needed') throw error;
+        // Eligibility may have changed after routing (another process consumed,
+        // revoked, or expired the grant). Refresh and resolve a permitted peer
+        // before recording or preparing any Worker run.
+        await this.refreshPaidEligibility();
+        resolutionTask = {
+          ...resolutionTask,
+          excludeAgents: [...new Set([...(resolutionTask.excludeAgents ?? []), agent.id])],
+          excludeIdentities: [...new Set([...(resolutionTask.excludeIdentities ?? []), ...identitiesOf(agent)])],
+        };
+      }
+    }
+    await task.onWorkerSelected?.(agent);
     const artifactDir = path.join(this.store.directory, 'evidence', task.actionId ?? runKey);
     await mkdir(artifactDir, { recursive: true });
     // Recompute routing for whichever Worker is about to run, including any
@@ -427,7 +454,6 @@ export class ProjectRuntime extends EventEmitter {
       const requiredTier = securityRequired ? 'security' : (task.risk === 'high' || task.escalate === true) ? 'deep' : 'routine';
       const acceptableTiers = requiredTier === 'security' ? ['security'] : requiredTier === 'deep' ? ['deep', 'security'] : ['routine'];
       if (modelEntry && !acceptableTiers.includes(modelEntry.tier)) throw new RoutingError(`Static model ${selectedModel} does not satisfy required ${requiredTier} tier for ${task.role}`, 'NO_ELIGIBLE_MODEL');
-      let paidApiAuthorization;
       if (agent.paidApi) {
         const paidEndpoint = agent.paidApi.endpoint?.replace(/\/$/, '');
         if (!selectedModel || !paidEndpoint || (this.modelCatalog() && (!modelEntry || !modelEntry.paid || modelEntry.endpoint.replace(/\/$/, '') !== paidEndpoint))) {
@@ -435,7 +461,11 @@ export class ProjectRuntime extends EventEmitter {
           error.failureKind = 'authorization-needed';
           throw error;
         }
-        paidApiAuthorization = await reservePaidApiRun({ stateDir: this.store.directory, connectionId: agent.connectionId ?? agent.id, modelId: selectedModel, endpoint: agent.paidApi.endpoint, project: this.repository, runId: runKey });
+        if (!paidApiAuthorization) {
+          const error = new Error(`Paid API authorization needed for connection ${agent.connectionId ?? agent.id}, model ${selectedModel}`);
+          error.failureKind = 'authorization-needed';
+          throw error;
+        }
       } else if (modelEntry?.paid) {
         const error = new Error(`Paid API authorization needed: connection ${modelEntry.connectionId}, model ${selectedModel} is not configured as a paid connection`);
         error.failureKind = 'authorization-needed';
@@ -620,6 +650,18 @@ export class ProjectRuntime extends EventEmitter {
 
   async review(action) {
     await this.refreshPaidEligibility();
+    action.reviews ??= [];
+    action.reservedReviewerIds ??= [];
+    action.reservedReviewerIdentities ??= [];
+    // Reservations are only needed to distinguish independent reviews that have
+    // actually been bound. A controller restart may leave a selected reviewer
+    // reservation behind without a report; release those identities so the
+    // same eligible independent reviewer can safely be retried.
+    const boundReviewerIds = new Set(action.reviews.map(review => review.reviewer).filter(Boolean));
+    const boundReviewerIdentities = new Set();
+    for (const id of boundReviewerIds) for (const identity of identitiesOf(this.registry.agents.get(id))) boundReviewerIdentities.add(identity);
+    action.reservedReviewerIds = action.reservedReviewerIds.filter(id => boundReviewerIds.has(id));
+    action.reservedReviewerIdentities = action.reservedReviewerIdentities.filter(identity => boundReviewerIdentities.has(identity));
     if ((action.reviewAttempts ?? 0) >= (this.config.maxReviewAttempts ?? 3)) {
       action.phase = 'HALTED'; await this.checkpoint(); throw new Error('Independent review retry budget exhausted');
     }
@@ -628,9 +670,6 @@ export class ProjectRuntime extends EventEmitter {
     // Allocate the constrained security capability first so a general review
     // cannot consume the only available security reviewer.
     const required = action.risk === 'high' ? ['security', 'review'] : ['review'];
-    action.reviews ??= [];
-    action.reservedReviewerIds ??= [];
-    action.reservedReviewerIdentities ??= [];
     const builderIds = new Set([action.builder, ...(action.builderHistory ?? [])].filter(Boolean));
     const builderIdentitySet = new Set([action.builderIdentity, ...(action.builderIdentities ?? [])].filter(Boolean));
     for (const id of builderIds) for (const identity of identitiesOf(this.registry.agents.get(id))) builderIdentitySet.add(identity);
@@ -645,7 +684,13 @@ export class ProjectRuntime extends EventEmitter {
       for (const capability of required.slice(action.reviews.length)) {
         const excludedIds = [...new Set([...builderIds, ...usedReviewerIds])];
         const excludedIdentities = [...new Set([...builderIdentitySet, ...usedReviewerIdentities])];
-        const reviewer = this.registry.select({ role: 'review', capabilities: ['review', capability], risk: action.risk, exclude: excludedIds, excludeIdentities: excludedIdentities }, this.state.agentPerformance);
+        let reviewer;
+        try { reviewer = this.registry.select({ role: 'review', capabilities: ['review', capability], risk: action.risk, exclude: excludedIds, excludeIdentities: excludedIdentities }, this.state.agentPerformance); }
+        catch {
+          action.phase = 'HALTED';
+          await this.checkpoint();
+          throw new Error('Independent review retry budget exhausted');
+        }
         let actualReviewer;
         let routing;
         const tree = await this.worktrees.create(randomUUID(), 'review', action.commit);
@@ -716,8 +761,19 @@ export class ProjectRuntime extends EventEmitter {
       await this.event('UPDATE', { actionId: action.id, outcome: action.phase });
     } catch (error) {
       if (activeTree && activeSnapshot && (await this.worktrees.snapshot(activeTree.directory)).hash === activeSnapshot.hash) await this.worktrees.remove(activeTree);
-      if (activeReviewer) updatePerformance(this.state, activeReviewer, false);
-      action.phase = action.reviewAttempts >= (this.config.maxReviewAttempts ?? 3) || safeError(error).includes('modified') || safeError(error).includes('STOP_UNCONFIRMED') ? 'HALTED' : 'REVIEW_REQUIRED';
+      if (activeReviewer) {
+        updatePerformance(this.state, activeReviewer, false);
+        const reportBound = action.reviews.some(review => review.reviewer === activeReviewer);
+        if (!reportBound && !safeError(error).includes('STOP_UNCONFIRMED')) {
+          const boundIds = new Set(action.reviews.map(review => review.reviewer));
+          const boundIdentities = new Set();
+          for (const id of boundIds) for (const identity of identitiesOf(this.registry.agents.get(id))) boundIdentities.add(identity);
+          action.reservedReviewerIds = action.reservedReviewerIds.filter(id => id !== activeReviewer && boundIds.has(id));
+          const releasedIdentities = new Set(identitiesOf(this.registry.agents.get(activeReviewer)));
+          action.reservedReviewerIdentities = action.reservedReviewerIdentities.filter(identity => !releasedIdentities.has(identity) || boundIdentities.has(identity));
+        }
+      }
+      action.phase = safeError(error).includes('retry budget exhausted') || action.reviewAttempts >= (this.config.maxReviewAttempts ?? 3) || safeError(error).includes('modified') || safeError(error).includes('STOP_UNCONFIRMED') ? 'HALTED' : 'REVIEW_REQUIRED';
       action.error = safeError(error);
       await this.checkpoint();
       throw error;
