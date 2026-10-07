@@ -60,7 +60,10 @@ Web host 模式下的可用 Agent 别名从 `config.host.json` 或 `--host-agent
 普通对话默认显示未配置。只有 Host 明确启用 `transport: "dsh"` 且指定
 `provider` / `model` 的连接才进入原生 SDK allowlist；OpenCode、Pi、Codex 的
 传输连接不是 DSH LLM binding。浏览器只能选择 allowlist 中的组合，不能更改
-可执行文件、环境、SDK profile、权限、provider 配置或付费设置。
+工作目录、可执行文件、环境、SDK profile、权限、provider 配置或付费设置。
+原生工作目录由 Host 的 `nativeOptions.workspace` 指定（默认 Host 启动目录），界面只读显示。
+Web 项目设置固定允许读取与写入，禁止 Worker shell、network 和 gitCommit；
+浏览器不能扩大或改变这些执行权限，原有 CLI 项目权限配置仍由 Host 管理。
 Host 设置 `nativeOptions.enabled: false` 时原生模式始终禁用。
 原生 SDK 由 `npm ci` 安装，通过 Node 加载 `@deepseek-ai/dsh/lib/bin.js`
 并使用 `--profile sdk`；显式 Node launcher 必须在 Host 设置对应 `argsPrefix`。

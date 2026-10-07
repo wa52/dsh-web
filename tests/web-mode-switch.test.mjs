@@ -412,3 +412,37 @@ test('HTTP setup rejects browser account and funding overrides before project cr
   assert.equal(host.projectConfig.commercialLoop.enabled, true);
   assert.deepEqual(host.hostAgents, trusted);
 });
+
+test('HTTP native/start keeps the SDK workspace Host-owned', async t => {
+  const { post, host, root } = await serverFixture(t);
+  const workspace = path.join(root, 'trusted-native');
+  await mkdir(workspace);
+  host.nativeOptions.workspace = workspace;
+  const result = await post('/api/native/start', { workspace: path.join(root, 'browser-native'), env: { BROWSER_OVERRIDE: '1' } });
+  assert.equal(result.status, 200);
+  assert.equal(host.nativeSession.workspace, workspace);
+  assert.equal(host.view().nativeWorkspace, workspace);
+  assert.equal(host.projectRuntime, null);
+  const completed = nextTurn(host.nativeSession);
+  await host.nativeChat('Host workspace fixture');
+  await completed;
+  assert.equal(host.nativeSession.state, 'idle');
+});
+
+test('HTTP setup denies browser execution policy changes before persistence', async t => {
+  const { post, host, repository, stateDir } = await serverFixture(t);
+  const config = { goal: 'fixture', repository, stateDir, successCriteria: ['pass'], tests: [{ executable: 'node', args: [] }] };
+  for (const permissions of [{ shell: true }, { network: true }, { gitCommit: true }, { write: false }, { read: false }, { customTool: true }, null, []]) {
+    const result = await post('/api/project/setup', { ...config, permissions });
+    assert.equal(result.status, 400);
+    assert.match(result.data.error, /permissions are Host-owned/);
+    assert.equal(host.projectRuntime, null);
+    assert.equal(host.projectConfig, null);
+    await assert.rejects(readFile(path.join(stateDir, 'dsh-web-project.json')), { code: 'ENOENT' });
+  }
+  const valid = await post('/api/project/setup', config);
+  assert.equal(valid.status, 200);
+  const expected = { read: true, write: true, shell: false, network: false, gitCommit: false };
+  assert.deepEqual(host.projectRuntime.config.permissions, expected);
+  assert.deepEqual((await loadProjectConfig(stateDir)).permissions, expected);
+});

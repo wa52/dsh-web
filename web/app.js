@@ -22,6 +22,7 @@ function render(data) {
   updateModeTabs();
   $(`mode-label`) && text($('mode-label'), hostMode === 'native' ? '普通对话' : '自主项目');
   text($('status'), host.projectConfigured ? '已配置' : '未配置');
+  text($('native-workspace'), host.nativeWorkspace ?? '由 Host 配置决定');
 
   if (host.native) {
     const configured = host.nativeConfigured;
@@ -40,7 +41,7 @@ function render(data) {
   }
 
   if (host.projectConfigured) renderProject(host.projectWorld ?? data.project ?? { world: null, agents: [], running: false });
-  else for (const id of ['start', 'pause', 'cancel']) $(id).disabled = true;
+  else renderProject({ world: null, agents: [], running: false });
   if (host.projectError) text($('message'), host.projectError);
 }
 
@@ -161,7 +162,6 @@ $('native-form')?.addEventListener('submit', async event => {
         return;
       }
       await post('/api/native/start', {
-        workspace: $('native-workspace').value || '.',
         provider,
         model,
       });

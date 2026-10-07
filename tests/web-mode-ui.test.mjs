@@ -17,8 +17,8 @@ test('UI mode updates show truthful controls, Web setup and default commercial s
   });
   for (const match of html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {
     const el = element();
-    el.hidden = /\s hidden(?:\s|>)/.test(match[0]);
-    el.checked = /\s checked(?:\s|>)/.test(match[0]);
+    el.hidden = /\shidden(?:\s|>)/.test(match[0]);
+    el.checked = /\schecked(?:\s|>)/.test(match[0]);
     elements.set(match[1], el);
   }
   const streams = new Map();
@@ -44,6 +44,7 @@ test('UI mode updates show truthful controls, Web setup and default commercial s
   assert.equal(get('project-controls').hidden, true);
   assert.equal(get('start').disabled, true);
   assert.equal(get('setup-commercialLoop').checked, true);
+  assert.match(get('project-repository').textContent, /填写上方项目设置表单/);
   assert.match(html, /id="project-repository">填写上方项目设置表单，保存后启动 Loop。/);
   const projectWorld = { world: { goal: 'Product', project: { repository: 'fixture-repository' }, actions: [], projectHealth: 0, status: 'idle' }, agents: [], running: false };
   update({ mode: 'project', projectConfigured: true, projectWorld, nativeConfigured: true, native });
@@ -57,6 +58,9 @@ test('UI mode updates show truthful controls, Web setup and default commercial s
   assert.equal(get('project-controls').hidden, true);
   assert.equal(get('native-send').disabled, false);
   assert.equal(get('mode-native').attributes['aria-selected'], 'true');
+  update({ mode: 'project', projectConfigured: false, nativeConfigured: false, native });
+  assert.match(get('project-repository').textContent, /填写上方项目设置表单/);
+  assert.equal(get('project-controls').hidden, true);
   // Legacy direct-runtime servers retain their CLI setup guidance and controls.
   streams.get('/api/events').onmessage({ data: JSON.stringify({ world: null, agents: [], running: false }) });
   assert.equal(get('mode-native').hidden, true);

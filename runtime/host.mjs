@@ -58,6 +58,7 @@ export class WebHost extends EventEmitter {
       nativeConfigured: this._isNativeConfigured(),
       native: this.nativeSession ? this.nativeSession.describe() : { state: 'idle', lastError: null },
       nativeChoices: this._nativeAllowlist(),
+      nativeWorkspace: path.resolve(this.nativeOptions.workspace ?? process.cwd()),
       projectRunning: this.projectRuntime?.running ?? false,
       projectError: this.lastProjectError,
       projectWorld: this.projectRuntime?.view() ?? null,
@@ -124,8 +125,7 @@ export class WebHost extends EventEmitter {
     }
     const allowlist = this._nativeAllowlist();
     if (!allowlist.length) throw new Error('Native conversation mode is not configured: no enabled Host provider/model allowlist');
-    // Browser requests may only select provider/model/workspace; never accept
-    // executable, argsPrefix, env, profile, permissions or paid overrides.
+    // Browser requests may only select provider/model; launch state is Host-owned.
     const requestedProvider = typeof options.provider === 'string' ? options.provider.trim() : '';
     const requestedModel = typeof options.model === 'string' ? options.model.trim() : '';
     let selected;
@@ -137,7 +137,7 @@ export class WebHost extends EventEmitter {
       selected = allowlist[0];
     }
     const merged = {
-      workspace: typeof options.workspace === 'string' ? options.workspace.trim() : (this.nativeOptions.workspace ?? process.cwd()),
+      workspace: this.nativeOptions.workspace ?? process.cwd(),
       provider: selected.provider,
       model: selected.model,
       executable: this.nativeOptions.executable,
@@ -183,6 +183,14 @@ export class WebHost extends EventEmitter {
   async setupProject(config) {
     this._assertNotSwitching();
     if (this._isBusy()) throw Object.assign(new Error('Cannot change project setup while work is running'), { code: 'RUNNING' });
+    const permissions = { read: true, write: true, shell: false, network: false, gitCommit: false };
+    if (config.permissions !== undefined) {
+      if (!config.permissions || typeof config.permissions !== 'object' || Array.isArray(config.permissions)
+        || Object.entries(config.permissions).some(([key, value]) => !Object.hasOwn(permissions, key) || value !== permissions[key])) {
+        throw new Error('permissions are Host-owned; Web setup cannot change execution policy');
+      }
+    }
+    config = { ...config, permissions };
     const saved = await saveProjectConfig(this.stateDir ?? config.stateDir, config);
     if (this.projectRuntime) { await this.projectRuntime.close(); this.projectRuntime = null; }
     this.projectConfig = await loadProjectConfig(path.dirname(saved));
