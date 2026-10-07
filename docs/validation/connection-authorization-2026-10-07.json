@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-07T01:47:01.607Z",
+  "scope": "Independent funding connections and explicit paid-API authorization; not commercial product acceptance",
+  "sourceCommit": "108ba024dcf49908d3843814e852384a65f62402",
+  "finalLoop": {
+    "status": "complete",
+    "acceptedHead": "108ba024dcf49908d3843814e852384a65f62402",
+    "actionCount": 1
+  },
+  "implementation": "DSH dispatched native OpenCode Go builders in isolated Git worktrees. Host ran tests and committed native source. Root authored supplemental Host probes and this validation metadata only.",
+  "changes": [
+    "Connection aliases distinguish native transport, account, shared quota group and physical model ID; one exhausted account does not quarantine independent accounts using the same transport.",
+    "DeepSeek V4.1 Flash and GLM 5.3 Flash custom-provider examples are disabled and require explicit Host grants before paid Worker preparation.",
+    "Persistent project/connection/model/endpoint/expiry-bound grants atomically reserve non-refundable Worker runs outside Worker workspaces; stale or incomplete locks fail closed without automatic takeover.",
+    "Model-aware fallback preserves task tier, security capabilities, Builder aliases and distinct completed reviewers, recording the actual selected actor.",
+    "Fresh authorization checks and reservation denial can continue with an eligible funded peer; exhausted grants do not trigger account-quota quarantine.",
+    "Unbound reviewer reservations release after confirmed failure and during recovery; completed review identities remain excluded and retry exhaustion retains its established error contract."
+  ],
+  "finalGate": {
+    "phase": "MERGE_READY",
+    "protectedIntact": true,
+    "builderTree": {
+      "tests": 158,
+      "pass": 157,
+      "fail": 0,
+      "skipped": 1,
+      "supplementalProbes": [
+        "check-connection-scope",
+        "check-paid-token-reuse",
+        "check-partial-grant-routing",
+        "check-paid-review-independence",
+        "check-exhausted-grant-fallback"
+      ]
+    },
+    "committedTree": {
+      "tests": 158,
+      "pass": 157,
+      "fail": 0,
+      "skipped": 1,
+      "supplementalProbes": [
+        "check-connection-scope",
+        "check-paid-token-reuse",
+        "check-partial-grant-routing",
+        "check-paid-review-independence",
+        "check-exhausted-grant-fallback"
+      ]
+    },
+    "reviewers": [
+      {
+        "worker": "go-review-gpt",
+        "model": "opencode-go/gpt-6-luna",
+        "capability": "security",
+        "verdict": "pass",
+        "blockingRisks": [],
+        "commit": "108ba024dcf49908d3843814e852384a65f62402",
+        "evidenceItems": 7
+      },
+      {
+        "worker": "go-review",
+        "model": "opencode-go/glm-5.3",
+        "capability": "review",
+        "verdict": "pass",
+        "blockingRisks": [],
+        "commit": "108ba024dcf49908d3843814e852384a65f62402",
+        "evidenceItems": 8
+      }
+    ]
+  },
+  "rejectedCandidates": [
+    {
+      "commit": "556f5837857789bc394febd2d07ad4ae97fcae3e",
+      "reason": "Missing additive regressions and three legacy quota compatibility failures"
+    },
+    {
+      "commit": "88296698d0e71adeea4d51222807e79874968760",
+      "reason": "Incorrect new test invocations and malformed native review output"
+    },
+    {
+      "commit": "65eab89a62aadc65ed06c86fd12078b5701b14bc",
+      "reason": "Host test timeout; clean-tree tests passed, but failed Host evidence was not overridden"
+    },
+    {
+      "commit": "ba7c126589747da7412089852f662faf41b4c137",
+      "reason": "Partial model grants prevented funded alternatives for higher-tier tasks"
+    },
+    {
+      "commit": "765b21e894529c2c8db8592fda3eaba6c9fcf829",
+      "privateGate": "MERGE_READY",
+      "finalAcceptance": "REJECTED",
+      "reason": "Supplemental actual review-to-execute probe resolved to Builder; exhausted-grant continuation also failed"
+    },
+    {
+      "commit": "c9fbe526145ff151dcbcf9be26c5a8ee13e987ad",
+      "reason": "Nine core test failures after reviewer identity changes"
+    },
+    {
+      "commit": "4c32b128f72d2ac99faa01025dc21833a92bdeaf",
+      "reason": "Two legacy review retry failures and exhausted-grant fallback probe failure; both independent reviewers rejected"
+    }
+  ],
+  "authorization": {
+    "maintenanceFunding": "Existing OpenCode Go subscription only",
+    "newPaidApiCalls": 0,
+    "actualPaidLiveE2E": false,
+    "actualPaidGrantsEnabled": false,
+    "fixtureEndpoints": "Local synthetic endpoints, no real API keys",
+    "limitMeaning": "maxWorkerRuns limits authorized Worker reservations, not requests, tokens or currency; a Worker may issue multiple API requests",
+    "crashRecovery": "Stop every controller sharing the state directory before manually removing only the ledger lock; retain the ledger and consumed reservations"
+  },
+  "limitations": [
+    "Operator must configure real independent account environments; aliases do not create new accounts or prove balances.",
+    "Paid custom-provider live interoperability has not been verified with authorized paid calls.",
+    "The historic no-intervention SupportDesk experiment remains failed and unchanged; this maintenance validation does not establish product delivery or commercial readiness.",
+    "Reviewer raw protocol/format failures remain failures; they were not relabeled as quota exhaustion or converted into PASS.",
+    "One pre-existing platform-dependent test was skipped: actual signal termination captured by the outside supervisor."
+  ],
+  "primarySources": [
+    "https://opencode.ai/docs/providers#custom-provider",
+    "https://deepseek.com/news/deepseek-v4-1-flash/",
+    "https://docs.z.ai/guides/vlm/glm-5.3-flash"
+  ]
+}
