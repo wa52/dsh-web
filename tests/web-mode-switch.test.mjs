@@ -25,7 +25,8 @@ async function hostFixture(t, options = {}) {
   git(['init', '-b', 'main']); git(['add', '.']);
   git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', '-c', 'commit.gpgSign=false', 'commit', '-m', 'Seed']);
   const stateDir = path.join(root, 'state');
-  const host = new WebHost({ stateDir, nativeOptions: { executable: process.execPath, argsPrefix: [sdkFixture], profile: 'sdk' }, ...options });
+  const hostAgents = options.hostAgents ?? { ...DEFAULT_HOST_AGENTS, dsh: { ...DEFAULT_HOST_AGENTS.dsh, enabled: true } };
+  const host = new WebHost({ stateDir, hostAgents, nativeOptions: { executable: process.execPath, argsPrefix: [sdkFixture], profile: 'sdk' }, ...options });
   await host.init();
   return { root, repository, stateDir, host };
 }
@@ -115,7 +116,8 @@ test('WebHost rejects mode switch while native session is streaming', async t =>
   const sendPromise = host.nativeChat('slow');
   await new Promise(resolve => setTimeout(resolve, 100));
   await assert.rejects(host.setMode('project'), /running/i);
-  await assert.rejects(sendPromise, /budget|interrupted|timeout/i);
+  const result = await sendPromise;
+  assert.equal(result.state, 'streaming');
   await host.close();
 });
 
@@ -259,4 +261,34 @@ test('setup form refuses shell metacharacters in test executable', async t => {
   });
   assert.equal(result.status, 400);
   assert.match(result.data.error, /shell metacharacters/);
+});
+
+test('NativeSession fails promptly when the SDK reports a turn error', async t => {
+  const session = new NativeSession({ executable: process.execPath, argsPrefix: [sdkFixture], env: { DSH_SDK_FAIL: 'turn' }, profile: 'sdk', provider: 'deepseek-official', model: 'deepseek-v4-flash' });
+  const errors = [];
+  session.on('error', error => errors.push(error));
+  await session.start();
+  await session.send('hello');
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.ok(errors.length > 0);
+  assert.match(errors[0].message, /DSH turn ended error/i);
+  await session.dispose();
+});
+
+test('WebHost refuses native start when no provider/model is enabled', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-web-unconfigured-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const host = new WebHost({ stateDir: path.join(root, 'state'), hostAgents: DEFAULT_HOST_AGENTS, nativeOptions: {} });
+  await host.init();
+  t.after(() => host.close());
+  await assert.rejects(host.startNativeSession(), /not configured|no enabled Host provider/i);
+  assert.equal(host.view().nativeConfigured, false);
+});
+
+test('HTTP native/start ignores browser executable override and uses Host allowlist', async t => {
+  const { post, get } = await serverFixture(t);
+  const start = await post('/api/native/start', { workspace: '.', provider: 'deepseek-official', model: 'deepseek-v4-flash', executable: '/nonexistent/override.mjs' });
+  assert.equal(start.status, 200);
+  const state = await get('/api/state');
+  assert.equal(state.data.host.native.state, 'idle');
 });

@@ -85,7 +85,7 @@ export async function findLaunchProcesses(token) {
   return records;
 }
 
-function launch(executable, args, options, launchToken) {
+export function launch(executable, args, options, launchToken) {
   if (process.platform === 'win32' && !path.isAbsolute(executable) && !executable.includes('/')) {
     for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
       const match = ['.exe', '.ps1', ''].map(suffix => path.join(directory, executable + suffix)).find(candidate => existsSync(candidate) && statSync(candidate).isFile());

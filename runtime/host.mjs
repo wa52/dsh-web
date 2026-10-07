@@ -8,6 +8,7 @@ import { createAgentAdapter } from './adapters.mjs';
 import { ProjectRuntime } from './project.mjs';
 import { loadProjectConfig, saveProjectConfig, mergeAgentConfigs, DEFAULT_HOST_AGENTS, sanitizeProjectConfig } from './project-config.mjs';
 import { atomicJson } from './store.mjs';
+import { redact } from './process.mjs';
 
 const HOST_STATE_FILE = 'dsh-web-host.json';
 
@@ -32,7 +33,12 @@ export class WebHost extends EventEmitter {
     if (this.stateDir) {
       try {
         const loaded = await loadProjectConfig(this.stateDir);
-        if (loaded) { this.projectConfig = loaded; this.mode = 'project'; }
+        if (loaded) {
+          this.projectConfig = loaded;
+          this.mode = 'project';
+          try { await this._loadProjectRuntime(); }
+          catch (error) { this.emit('project-error', redact(error.message)); }
+        }
       } catch { /* ignore invalid persisted config; keep native mode */ }
     }
     this.emit('mode', this.view());
@@ -45,10 +51,26 @@ export class WebHost extends EventEmitter {
       switching: this.switching,
       projectConfigured: Boolean(this.projectConfig),
       projectConfig: this.projectConfig ? sanitizeProjectConfig(this.projectConfig) : null,
+      nativeConfigured: this._isNativeConfigured(),
       native: this.nativeSession ? this.nativeSession.describe() : { state: 'idle', lastError: null },
       projectRunning: this.projectRuntime?.running ?? false,
       projectWorld: this.projectRuntime?.view() ?? null,
     };
+  }
+
+  _nativeAllowlist() {
+    const list = [];
+    for (const [alias, agent] of Object.entries(this.hostAgents)) {
+      if (agent.enabled !== true) continue;
+      if (typeof agent.provider === 'string' && typeof agent.model === 'string') {
+        list.push({ alias, provider: agent.provider, model: agent.model });
+      }
+    }
+    return list;
+  }
+
+  _isNativeConfigured() {
+    return this._nativeAllowlist().length > 0;
   }
 
   _assertNotSwitching() {
@@ -93,8 +115,29 @@ export class WebHost extends EventEmitter {
       if (this.nativeSession.state === 'streaming' || this.nativeSession.state === 'connecting') return this.nativeSession.describe();
       await this.nativeSession.dispose();
     }
-    const merged = { ...this.nativeOptions, ...options };
-    merged.artifactDir = merged.artifactDir ?? (this.stateDir ? path.join(this.stateDir, 'native-sessions') : null);
+    const allowlist = this._nativeAllowlist();
+    if (!allowlist.length) throw new Error('Native conversation mode is not configured: no enabled Host provider/model allowlist');
+    // Browser requests may only select provider/model/workspace; never accept
+    // executable, argsPrefix, env, profile, permissions or paid overrides.
+    const requestedProvider = typeof options.provider === 'string' ? options.provider.trim() : '';
+    const requestedModel = typeof options.model === 'string' ? options.model.trim() : '';
+    let selected;
+    if (requestedProvider && requestedModel) {
+      selected = allowlist.find(a => a.provider === requestedProvider && a.model === requestedModel);
+      if (!selected) throw new Error(`Provider/model not in enabled Host allowlist: ${requestedProvider}/${requestedModel}`);
+    } else {
+      selected = allowlist[0];
+    }
+    const merged = {
+      workspace: typeof options.workspace === 'string' ? options.workspace.trim() : (this.nativeOptions.workspace ?? process.cwd()),
+      provider: selected.provider,
+      model: selected.model,
+      executable: this.nativeOptions.executable,
+      argsPrefix: this.nativeOptions.argsPrefix,
+      env: this.nativeOptions.env,
+      profile: this.nativeOptions.profile ?? 'sdk',
+      artifactDir: this.nativeOptions.artifactDir ?? (this.stateDir ? path.join(this.stateDir, 'native-sessions') : null),
+    };
     this.nativeSession = createNativeSession(merged);
     this._wireNativeSession();
     try { await this.nativeSession.start(); }
@@ -139,6 +182,15 @@ export class WebHost extends EventEmitter {
     return sanitizeProjectConfig(this.projectConfig);
   }
 
+  _resolveWorkerAlias(worker, agentEntries) {
+    if (!worker || agentEntries[worker]) return worker;
+    const transportMap = { opencode: 'opencode', codex: 'codex', pi: 'pi', dsh: 'dsh' };
+    const transport = transportMap[worker];
+    if (!transport) return worker;
+    const match = Object.entries(agentEntries).find(([, options]) => options.enabled !== false && (options.transport ?? options.id) === transport);
+    return match ? match[0] : worker;
+  }
+
   async _loadProjectRuntime() {
     if (!this.projectConfig) throw new Error('No project configuration');
     if (this.ctx) { await this.fiber.dispose(); this.ctx = null; this.fiber = null; }
@@ -150,7 +202,12 @@ export class WebHost extends EventEmitter {
       const settings = { ...options, id: options.id ?? alias, connectionId: options.connectionId ?? alias };
       return createAgentAdapter(settings.transport ?? alias, settings);
     });
-    this.projectRuntime = this.ctx.autonomousControl.createProject(this.projectConfig, { agents });
+    const runtimeConfig = { ...this.projectConfig };
+    if (runtimeConfig.commercialLoop?.enabled) {
+      const resolvedWorker = this._resolveWorkerAlias(runtimeConfig.commercialLoop.worker, agentEntries);
+      runtimeConfig.commercialLoop = { ...runtimeConfig.commercialLoop, worker: resolvedWorker };
+    }
+    this.projectRuntime = this.ctx.autonomousControl.createProject(runtimeConfig, { agents });
     this.projectRuntime.on('state', view => this.emit('project-state', view));
     this.projectRuntime.on('run', event => this.emit('project-run', event));
     this.projectRuntime.on('loop-error', error => this.emit('project-error', error));
@@ -163,6 +220,11 @@ export class WebHost extends EventEmitter {
     const config = await loadProjectConfig(this.stateDir);
     if (!config) throw new Error('No saved project configuration');
     this.projectConfig = config;
+    this.mode = 'project';
+    if (!this.projectRuntime) {
+      try { await this._loadProjectRuntime(); }
+      catch (error) { this.emit('project-error', redact(error.message)); }
+    }
     await this._saveHostState();
     this.emit('mode', this.view());
     return sanitizeProjectConfig(config);

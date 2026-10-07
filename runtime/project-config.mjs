@@ -31,7 +31,7 @@ export function validateProjectConfig(value, { allowCredentials = false } = {}) 
   assertAbsolute('stateDir', value.stateDir);
   assertStringArray('successCriteria', value.successCriteria, 50);
   if (value.constraints !== undefined && (!Array.isArray(value.constraints) || value.constraints.some(item => typeof item !== 'string'))) throw new Error('constraints must be an array of strings');
-  assertStringArray('tests', value.tests, 20);
+  if (!Array.isArray(value.tests) || value.tests.length === 0) throw new Error('tests must be a non-empty array');
   for (const [index, test] of value.tests.entries()) {
     if (!test || typeof test !== 'object' || !test.executable || !Array.isArray(test.args)) throw new Error(`tests[${index}] must have executable and args array`);
     if (test.executable.includes('&') || test.executable.includes('|') || test.executable.includes(';')) throw new Error(`tests[${index}] executable must not contain shell metacharacters`);
@@ -42,8 +42,8 @@ export function validateProjectConfig(value, { allowCredentials = false } = {}) 
     }
     if (value.agents) {
       for (const [alias, agent] of Object.entries(value.agents)) {
-        for (const key of ['apiKey', 'apiKeyEnv', 'token', 'password', 'secret', 'openCodeProvider']) {
-          if (agent[key] !== undefined) throw new Error(`Credential/provider field ${key} is not allowed in sanitized agent config for ${alias}`);
+        for (const key of ['apiKey', 'apiKeyEnv', 'token', 'password', 'secret', 'openCodeProvider', 'paidApi']) {
+          if (agent[key] !== undefined) throw new Error(`Credential/provider/paid field ${key} is not allowed in sanitized agent config for ${alias}`);
         }
       }
     }
@@ -108,7 +108,11 @@ export function mergeAgentConfigs(projectAgents = {}, hostAgents = {}) {
     const project = projectAgents[alias] ?? {};
     if (project.enabled === false) continue;
     if (host.enabled === false && project.enabled !== true) continue;
-    merged[alias] = { ...host, ...project };
+    const agent = { ...host, ...project };
+    // Browser project configuration must not inherit Host credentials, custom
+    // providers, or paid flags; those are Host-owned and rejected by validation.
+    for (const key of ['apiKey', 'apiKeyEnv', 'token', 'password', 'secret', 'openCodeProvider', 'paidApi']) delete agent[key];
+    merged[alias] = agent;
   }
   return merged;
 }
@@ -118,7 +122,7 @@ export function sanitizeProjectConfig(config) {
   for (const key of ['apiKey', 'apiKeyEnv', 'token', 'password', 'secret']) delete copy[key];
   if (copy.agents) {
     for (const agent of Object.values(copy.agents)) {
-      for (const key of ['apiKey', 'apiKeyEnv', 'token', 'password', 'secret', 'openCodeProvider']) delete agent[key];
+      for (const key of ['apiKey', 'apiKeyEnv', 'token', 'password', 'secret', 'openCodeProvider', 'paidApi']) delete agent[key];
     }
   }
   return copy;

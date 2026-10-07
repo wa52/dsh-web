@@ -1,11 +1,10 @@
-import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { killTree, processFingerprint, redact } from './process.mjs';
+import { launch, killTree, processFingerprint, redact } from './process.mjs';
 const require = createRequire(import.meta.url);
 
 const textOf = content => (content ?? []).filter(block => block.type === 'text').map(block => block.text).join('');
@@ -15,9 +14,10 @@ export class NativeSession extends EventEmitter {
   constructor(options = {}) {
     super();
     this.workspace = options.workspace ?? process.cwd();
-    this.provider = options.provider ?? 'deepseek-official';
-    this.model = options.model ?? 'deepseek-v4-flash';
+    this.provider = options.provider;
+    this.model = options.model;
     this.executable = options.executable;
+    this.argsPrefix = options.argsPrefix ?? [];
     this.profile = options.profile ?? 'sdk';
     this.sessionId = options.sessionId ?? randomUUID();
     this.artifactDir = options.artifactDir;
@@ -30,6 +30,8 @@ export class NativeSession extends EventEmitter {
     this.pending = '';
     this.closed = false;
     this.disposePromise = null;
+    this.fingerprint = null;
+    this._initialized = false;
   }
 
   static resolveSdkBin() {
@@ -56,8 +58,8 @@ export class NativeSession extends EventEmitter {
 
   async start() {
     if (this.child) throw new Error('Native session already started');
-    const bin = this.executable ?? NativeSession.resolveSdkBin();
-    if (!bin) {
+    const bin = NativeSession.resolveSdkBin();
+    if (!this.executable && !bin) {
       this.state = 'error';
       this.lastError = 'DeepSeek Harness SDK is not installed; run npm install';
       this.emit('error', { message: this.lastError });
@@ -65,22 +67,23 @@ export class NativeSession extends EventEmitter {
     }
     if (this.executable && !existsSync(this.executable)) {
       this.state = 'error';
-      this.lastError = `DSH SDK executable not found: ${this.executable}`;
+      this.lastError = `Native executable not found: ${this.executable}`;
       this.emit('error', { message: this.lastError });
       throw new Error(this.lastError);
     }
-    const args = [bin, '--profile', this.profile];
+    const command = this.executable ?? process.execPath;
+    const args = this.executable ? [...this.argsPrefix, '--profile', this.profile] : [bin, '--profile', this.profile];
     this.state = 'connecting';
     this.lastError = null;
+    this._initialized = false;
     if (this.artifactDir) await mkdir(this.artifactDir, { recursive: true });
-    const child = spawn(process.execPath, args, {
+    const child = launch(command, args, {
       cwd: this.workspace,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
       env: { ...process.env, NODE_TEST_CONTEXT: undefined, ...this.env },
-    });
+    }, this.sessionId);
     this.child = child;
-    const closed = new Promise(resolve => child.once('close', resolve));
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => this._onStdout(chunk));
@@ -136,8 +139,11 @@ export class NativeSession extends EventEmitter {
   }
 
   _onFrame(frame) {
+    if (frame.error) {
+      this._fail(new Error(frame.error.message ?? 'DSH SDK error'));
+      return;
+    }
     if (frame.id === 1) {
-      if (frame.error) { this._fail(new Error(frame.error.message ?? 'DSH SDK initialization error')); return; }
       this._initialized = true;
       return;
     }
@@ -200,14 +206,32 @@ export class NativeSession extends EventEmitter {
     return this.describe();
   }
 
+  async _waitForExit(pid, fingerprint, timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const current = await processFingerprint(pid);
+      if (!current || current !== fingerprint) return;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('Native session descendant processes did not stop in time');
+  }
+
   async dispose() {
     if (this.disposePromise) return this.disposePromise;
     this.disposePromise = (async () => {
       this.closed = true;
-      if (this.child) {
-        const closed = new Promise(resolve => this.child.once('close', resolve));
-        await killTree(this.child);
-        await closed;
+      const child = this.child;
+      if (child) {
+        const fingerprint = this.fingerprint;
+        const alreadyExited = child.exitCode !== null || child.signalCode !== null;
+        if (!alreadyExited) {
+          try { await killTree(child); }
+          catch (error) {
+            const stillThere = fingerprint && (await processFingerprint(child.pid));
+            if (stillThere) throw error;
+          }
+          if (fingerprint) await this._waitForExit(child.pid, fingerprint);
+        }
       }
       this.child = null;
       if (this.state !== 'error') this.state = 'stopped';
@@ -221,13 +245,17 @@ export class NativeSession extends EventEmitter {
 export function createNativeSession(options) {
   const model = options.model?.trim();
   const provider = options.provider?.trim();
-  if (model && !/^[^/\s]+\/[^/\s]+$|^[^/\s]+$/.test(model)) throw new Error('Invalid model identifier');
-  if (provider && !/^[a-z0-9_-]+$/i.test(provider)) throw new Error('Invalid provider identifier');
+  if (!provider) throw new Error('Native provider is required');
+  if (!model) throw new Error('Native model is required');
+  if (!/^[^/\s]+\/[^/\s]+$|^[^/\s]+$/.test(model)) throw new Error('Invalid model identifier');
+  if (!/^[a-z0-9_-]+$/i.test(provider)) throw new Error('Invalid provider identifier');
   return new NativeSession({
     workspace: path.resolve(options.workspace ?? process.cwd()),
-    provider: provider ?? 'deepseek-official',
-    model: model ?? 'deepseek-v4-flash',
+    provider,
+    model,
     executable: options.executable,
+    argsPrefix: options.argsPrefix,
+    env: options.env,
     profile: options.profile ?? 'sdk',
     sessionId: options.sessionId,
     artifactDir: options.artifactDir,

@@ -24,12 +24,14 @@ function render(data) {
   text($('status'), host.projectConfigured ? '已配置' : '未配置');
 
   if (host.native) {
+    const configured = host.nativeConfigured;
     const st = host.native.state ?? 'idle';
     const statusEl = $('native-status');
-    if (statusEl) { text(statusEl, st === 'streaming' ? '响应中…' : st === 'connecting' ? '连接中…' : st === 'error' ? `错误: ${host.native.lastError ?? '未知'}` : st === 'idle' ? '就绪' : st); statusEl.className = `tag${st === 'error' ? ' danger' : st === 'streaming' ? ' running' : ''}`; }
-    $('native-send').disabled = st === 'connecting' || st === 'streaming';
-    $('native-stop').disabled = st !== 'streaming';
-    nativeConnected = st === 'idle' || st === 'streaming';
+    const label = !configured ? '未配置' : st === 'streaming' ? '响应中…' : st === 'connecting' ? '连接中…' : st === 'error' ? `错误: ${host.native.lastError ?? '未知'}` : st === 'idle' ? '就绪' : st;
+    if (statusEl) { text(statusEl, label); statusEl.className = `tag${!configured || st === 'error' ? ' danger' : st === 'streaming' ? ' running' : ''}`; }
+    $('native-send').disabled = !configured || st === 'connecting' || st === 'streaming';
+    $('native-stop').disabled = !configured || st !== 'streaming';
+    nativeConnected = configured && (st === 'idle' || st === 'streaming');
   }
 
   if (host.projectConfigured && host.project) renderProject(host.project);
@@ -43,7 +45,7 @@ function updateModeTabs() {
   const setupPanel = $('setup-panel');
   if (setupPanel) setupPanel.hidden = !(hostMode === 'project' && !latest?.host?.projectConfigured);
   const projectControls = $('project-controls');
-  if (projectControls) projectControls.hidden = hostMode !== 'project' || !latest?.host?.projectConfigured;
+  if (projectControls) projectControls.hidden = hostMode !== 'project' || !latest?.host?.projectConfigured || !latest?.host?.projectWorld;
   for (const mode of ['native', 'project']) {
     const tab = $(`mode-${mode}`);
     if (tab) { tab.setAttribute('aria-selected', String(hostMode === mode)); tab.classList.toggle('active', hostMode === mode); }
@@ -144,10 +146,16 @@ $('native-form')?.addEventListener('submit', async event => {
   try {
     const start = !$('native-status')?.textContent?.includes('就绪');
     if (start) {
+      const provider = $('native-provider').value.trim();
+      const model = $('native-model').value.trim();
+      if (!provider || !model) {
+        text($('message'), '请选择已启用的 Provider 和 Model。');
+        return;
+      }
       await post('/api/native/start', {
         workspace: $('native-workspace').value || '.',
-        provider: $('native-provider').value || 'deepseek-official',
-        model: $('native-model').value || 'deepseek-v4-flash',
+        provider,
+        model,
       });
     }
     await post('/api/native/chat', { prompt });
