@@ -25,6 +25,10 @@ export class WebHost extends EventEmitter {
     this.fiber = null;
     this.ctx = null;
     this.switching = false;
+    this.lastProjectError = null;
+    this.on('project-error', error => {
+      this.lastProjectError = redact(typeof error === 'string' ? error : error?.message ?? String(error));
+    });
     this.hostStateFile = this.stateDir ? path.join(this.stateDir, HOST_STATE_FILE) : null;
   }
 
@@ -39,7 +43,7 @@ export class WebHost extends EventEmitter {
           try { await this._loadProjectRuntime(); }
           catch (error) { this.emit('project-error', redact(error.message)); }
         }
-      } catch { /* ignore invalid persisted config; keep native mode */ }
+      } catch (error) { this.emit('project-error', `Saved project configuration could not be loaded: ${redact(error.message)}. Correct the setup and save again.`); }
     }
     this.emit('mode', this.view());
     return this.view();
@@ -53,16 +57,19 @@ export class WebHost extends EventEmitter {
       projectConfig: this.projectConfig ? sanitizeProjectConfig(this.projectConfig) : null,
       nativeConfigured: this._isNativeConfigured(),
       native: this.nativeSession ? this.nativeSession.describe() : { state: 'idle', lastError: null },
+      nativeChoices: this._nativeAllowlist(),
       projectRunning: this.projectRuntime?.running ?? false,
+      projectError: this.lastProjectError,
       projectWorld: this.projectRuntime?.view() ?? null,
     };
   }
 
   _nativeAllowlist() {
+    if (this.nativeOptions.enabled === false) return [];
     const list = [];
     for (const [alias, agent] of Object.entries(this.hostAgents)) {
-      if (agent.enabled !== true) continue;
-      if (typeof agent.provider === 'string' && typeof agent.model === 'string') {
+      if (agent.enabled !== true || (agent.transport ?? alias) !== 'dsh' || agent.paidApi) continue;
+      if (typeof agent.provider === 'string' && agent.provider.trim() && typeof agent.model === 'string' && agent.model.trim()) {
         list.push({ alias, provider: agent.provider, model: agent.model });
       }
     }
@@ -94,8 +101,8 @@ export class WebHost extends EventEmitter {
       this.mode = mode;
       if (mode === 'project' && this.projectConfig && !this.projectRuntime) await this._loadProjectRuntime();
       this.emit('mode', this.view());
-      return this.view();
-    } finally { this.switching = false; }
+    } finally { this.switching = false; this.emit('mode', this.view()); }
+    return this.view();
   }
 
   async _disposeCurrentMode() {
@@ -122,6 +129,7 @@ export class WebHost extends EventEmitter {
     const requestedProvider = typeof options.provider === 'string' ? options.provider.trim() : '';
     const requestedModel = typeof options.model === 'string' ? options.model.trim() : '';
     let selected;
+    if (Boolean(requestedProvider) !== Boolean(requestedModel)) throw new Error('Select both provider and model from the enabled Host allowlist');
     if (requestedProvider && requestedModel) {
       selected = allowlist.find(a => a.provider === requestedProvider && a.model === requestedModel);
       if (!selected) throw new Error(`Provider/model not in enabled Host allowlist: ${requestedProvider}/${requestedModel}`);
@@ -142,7 +150,8 @@ export class WebHost extends EventEmitter {
     this._wireNativeSession();
     try { await this.nativeSession.start(); }
     catch (error) {
-      this.nativeSession = null;
+      // Retain failed state and its cleanup promise: switching must still
+      // confirm stop, especially when SDK initialization or disposal fails.
       throw error;
     }
     await this._saveHostState();
@@ -175,20 +184,29 @@ export class WebHost extends EventEmitter {
     this._assertNotSwitching();
     if (this._isBusy()) throw Object.assign(new Error('Cannot change project setup while work is running'), { code: 'RUNNING' });
     const saved = await saveProjectConfig(this.stateDir ?? config.stateDir, config);
+    if (this.projectRuntime) { await this.projectRuntime.close(); this.projectRuntime = null; }
     this.projectConfig = await loadProjectConfig(path.dirname(saved));
+    this.lastProjectError = null;
     if (this.mode !== 'project') await this.setMode('project');
+    else await this._loadProjectRuntime();
     await this._saveHostState();
     this.emit('mode', this.view());
     return sanitizeProjectConfig(this.projectConfig);
   }
 
   _resolveWorkerAlias(worker, agentEntries) {
-    if (!worker || agentEntries[worker]) return worker;
+    if (worker === 'auto') {
+      const match = Object.entries(agentEntries).find(([, options]) => !options.paidApi && (!options.roles || options.roles.includes('build')));
+      if (!match) throw new Error('No enabled Host builder account; enable an authorized connection in --host-agents');
+      return match[1].id ?? match[0];
+    }
+    if (!worker) return worker;
+    if (agentEntries[worker]) return agentEntries[worker].id ?? worker;
     const transportMap = { opencode: 'opencode', codex: 'codex', pi: 'pi', dsh: 'dsh' };
     const transport = transportMap[worker];
     if (!transport) return worker;
     const match = Object.entries(agentEntries).find(([, options]) => options.enabled !== false && (options.transport ?? options.id) === transport);
-    return match ? match[0] : worker;
+    return match ? (match[1].id ?? match[0]) : worker;
   }
 
   async _loadProjectRuntime() {
@@ -216,11 +234,12 @@ export class WebHost extends EventEmitter {
 
   async loadProjectFromState() {
     this._assertNotSwitching();
+    if (this._isBusy()) throw new Error('Cannot reload project configuration while work is running');
     if (!this.stateDir) throw new Error('No stateDir configured');
     const config = await loadProjectConfig(this.stateDir);
     if (!config) throw new Error('No saved project configuration');
     this.projectConfig = config;
-    this.mode = 'project';
+    if (this.mode !== 'project') await this.setMode('project');
     if (!this.projectRuntime) {
       try { await this._loadProjectRuntime(); }
       catch (error) { this.emit('project-error', redact(error.message)); }
@@ -240,11 +259,15 @@ export class WebHost extends EventEmitter {
   }
 
   async pauseProject() {
+    this._assertNotSwitching();
+    if (this.mode !== 'project') throw new Error('Not in project mode');
     if (!this.projectRuntime) throw new Error('No project runtime');
     return this.projectRuntime.pause();
   }
 
   async cancelProject() {
+    this._assertNotSwitching();
+    if (this.mode !== 'project') throw new Error('Not in project mode');
     if (!this.projectRuntime) throw new Error('No project runtime');
     return await this.projectRuntime.cancel();
   }

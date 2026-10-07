@@ -13,6 +13,7 @@ const textOf = content => (content ?? []).filter(block => block.type === 'text')
 export class NativeSession extends EventEmitter {
   constructor(options = {}) {
     super();
+    this.on('error', () => {});
     this.workspace = options.workspace ?? process.cwd();
     this.provider = options.provider;
     this.model = options.model;
@@ -32,6 +33,8 @@ export class NativeSession extends EventEmitter {
     this.disposePromise = null;
     this.fingerprint = null;
     this._initialized = false;
+    this._requestId = 1;
+    this._childClosed = null;
   }
 
   static resolveSdkBin() {
@@ -81,18 +84,20 @@ export class NativeSession extends EventEmitter {
       cwd: this.workspace,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      detached: process.platform !== 'win32',
       env: { ...process.env, NODE_TEST_CONTEXT: undefined, ...this.env },
     }, this.sessionId);
     this.child = child;
+    this._childClosed = new Promise(resolve => child.once('close', resolve));
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => this._onStdout(chunk));
     child.stderr.on('data', chunk => this.emit('log', { stream: 'stderr', text: redact(chunk) }));
     child.on('error', error => this._fail(error));
+    child.stdin.on('error', error => { if (!this.closed) this._fail(error); });
     child.on('close', code => {
-      if (this.state !== 'stopped' && this.state !== 'error') {
-        if (code !== 0) this._fail(new Error(`DSH SDK exited ${code}`));
-        else this.state = 'stopped';
+      if (!this.closed && this.state !== 'stopped' && this.state !== 'error') {
+        this._fail(new Error(`DSH SDK exited ${code} before the session was stopped; check Host provider/model configuration and SDK startup`));
       }
       this.emit('close', { code, state: this.state });
     });
@@ -105,6 +110,7 @@ export class NativeSession extends EventEmitter {
       this.emit('ready', this.describe());
       return this.describe();
     } catch (error) {
+      this._fail(error, false);
       await this.dispose();
       throw error;
     }
@@ -114,6 +120,7 @@ export class NativeSession extends EventEmitter {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (this.state === 'error') throw new Error(this.lastError ?? 'DSH SDK initialization failed');
+      if (this.closed) throw new Error('DSH SDK stopped during initialization');
       if (this._initialized) return;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
@@ -134,7 +141,7 @@ export class NativeSession extends EventEmitter {
       let frame;
       try { frame = JSON.parse(line); }
       catch (error) { this.emit('log', { stream: 'stdout', text: line }); continue; }
-      this._onFrame(frame);
+      try { this._onFrame(frame); } catch (error) { this._fail(error); }
     }
   }
 
@@ -147,20 +154,21 @@ export class NativeSession extends EventEmitter {
       this._initialized = true;
       return;
     }
-    if (frame.method === 'session.event' && frame.params?.sessionId === this.sessionId) {
+    if (!this.closed && frame.method === 'session.event' && frame.params?.sessionId === this.sessionId) {
       const event = frame.params.event;
-      this.emit('event', event);
+      if (!event || typeof event.type !== 'string') return;
+      this.emit('event', { type: event.type });
       if (event.type === 'assistant/message') {
-        const text = textOf(event.data.message.content);
+        const text = redact(textOf(event.data?.message?.content));
         this._currentText = (this._currentText ?? '') + text;
         this.emit('message', { text, delta: text });
       }
       if (event.type === 'turn/end') {
-        const reason = event.data.reason?.kind ?? event.data.reason;
+        const reason = event.data?.reason?.kind ?? event.data?.reason;
         const text = this._currentText ?? '';
         this._currentText = '';
         if (reason !== 'completed') {
-          this._fail(new Error(`DSH turn ended ${reason}`), false);
+          this._fail(new Error(`DSH turn ended ${reason}; check Host model authorization and SDK logs`));
           return;
         }
         this.history.push({ role: 'assistant', content: text });
@@ -176,19 +184,23 @@ export class NativeSession extends EventEmitter {
     this.state = 'error';
     this.lastError = redact(error.message);
     this.emit('error', { message: this.lastError, name: error.name });
-    if (dispose) void this.dispose();
+    if (dispose) void this.dispose().catch(error => {
+      this.lastError = `${this.lastError}; stop failed: ${redact(error.message)}`;
+      this.emit('error', { message: this.lastError });
+    });
   }
 
   async send(prompt) {
     if (this.state === 'error') throw new Error(`Native session error: ${this.lastError}`);
     if (this.state === 'connecting') await this._expectInitialized();
     if (this.state === 'streaming') throw new Error('Native session is already streaming; stop it first');
-    if (!this.child) throw new Error('Native session is not started');
+    if (!this.child || this.closed || this.state === 'stopped') throw new Error('Native session is not started');
     this.history.push({ role: 'user', content: prompt });
     this._trimHistory();
     this._currentText = '';
     this.state = 'streaming';
-    this._send({ jsonrpc: '2.0', id: 2, method: 'session/prompt', params: { sessionId: this.sessionId, contentBlocks: [{ type: 'text', text: prompt }] } });
+    try { this._send({ jsonrpc: '2.0', id: ++this._requestId, method: 'session/prompt', params: { sessionId: this.sessionId, contentBlocks: [{ type: 'text', text: prompt }] } }); }
+    catch (error) { this._fail(error); throw error; }
     return this.describe();
   }
 
@@ -198,11 +210,7 @@ export class NativeSession extends EventEmitter {
 
   async stop() {
     if (!this.child) return this.describe();
-    if (this.state === 'streaming') {
-      // Best-effort stop signal via dispose; SDK may not support an explicit stop method.
-      await this.dispose();
-      return this.describe();
-    }
+    await this.dispose();
     return this.describe();
   }
 
@@ -230,8 +238,15 @@ export class NativeSession extends EventEmitter {
             const stillThere = fingerprint && (await processFingerprint(child.pid));
             if (stillThere) throw error;
           }
-          if (fingerprint) await this._waitForExit(child.pid, fingerprint);
         }
+        // Capture close at spawn, including launchers that already exited.
+        let timer;
+        try {
+          await Promise.race([this._childClosed, new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Native SDK stop timed out; cannot switch modes until its guarded process tree has stopped')), 5000);
+          })]);
+        } finally { clearTimeout(timer); }
+        if (fingerprint) await this._waitForExit(child.pid, fingerprint);
       }
       this.child = null;
       if (this.state !== 'error') this.state = 'stopped';

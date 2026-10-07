@@ -21,6 +21,10 @@ process.stdin.on('data', chunk => {
       line({ jsonrpc: '2.0', id: value.id, result: { serverInfo: { name: 'dsh-native-fixture' } } });
     }
     if (value.method === 'session/prompt') {
+      if (process.env.DSH_SDK_FAIL === 'prompt') {
+        line({ jsonrpc: '2.0', id: value.id, error: { message: 'Prompt rejected: selected model is not authorized' } });
+        continue;
+      }
       currentSessionId = value.params.sessionId ?? currentSessionId;
       const prompt = value.params.contentBlocks?.map(b => b.text).join('') ?? '';
       if (process.env.DSH_SDK_FAIL === 'turn') {

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { atomicJson, clone } from './store.mjs';
 
 export const DEFAULT_HOST_AGENTS = {
@@ -33,7 +33,7 @@ export function validateProjectConfig(value, { allowCredentials = false } = {}) 
   if (value.constraints !== undefined && (!Array.isArray(value.constraints) || value.constraints.some(item => typeof item !== 'string'))) throw new Error('constraints must be an array of strings');
   if (!Array.isArray(value.tests) || value.tests.length === 0) throw new Error('tests must be a non-empty array');
   for (const [index, test] of value.tests.entries()) {
-    if (!test || typeof test !== 'object' || !test.executable || !Array.isArray(test.args)) throw new Error(`tests[${index}] must have executable and args array`);
+    if (!test || typeof test !== 'object' || typeof test.executable !== 'string' || !test.executable.trim() || !Array.isArray(test.args) || test.args.some(arg => typeof arg !== 'string')) throw new Error(`tests[${index}] must have a non-empty executable and string args array`);
     if (test.executable.includes('&') || test.executable.includes('|') || test.executable.includes(';')) throw new Error(`tests[${index}] executable must not contain shell metacharacters`);
   }
   if (!allowCredentials) {
@@ -42,12 +42,13 @@ export function validateProjectConfig(value, { allowCredentials = false } = {}) 
     }
     if (value.agents) {
       for (const [alias, agent] of Object.entries(value.agents)) {
-        for (const key of ['apiKey', 'apiKeyEnv', 'token', 'password', 'secret', 'openCodeProvider', 'paidApi']) {
-          if (agent[key] !== undefined) throw new Error(`Credential/provider/paid field ${key} is not allowed in sanitized agent config for ${alias}`);
-        }
+        if (!agent || typeof agent !== 'object' || Array.isArray(agent)) throw new Error(`Invalid agent selection for ${alias}`);
+        for (const key of Object.keys(agent)) if (key !== 'enabled') throw new Error(`Credential/provider/paid or Host-owned field ${key} is not allowed in sanitized agent config for ${alias}`);
+        if (agent.enabled !== undefined && typeof agent.enabled !== 'boolean') throw new Error(`Agent ${alias} enabled must be boolean`);
       }
     }
   }
+  if (!allowCredentials && value.models !== undefined) throw new Error('models are Host-owned; browser setup cannot override provider/model routing');
   const maxActions = value.maxActions ?? 10;
   if (!Number.isSafeInteger(maxActions) || maxActions < 1 || maxActions > 100) throw new Error('maxActions must be an integer 1..100');
   const agentTimeoutMs = value.agentTimeoutMs ?? 300_000;
@@ -74,7 +75,7 @@ export function validateProjectConfig(value, { allowCredentials = false } = {}) 
     testTimeoutMs,
     autoModelRouting: value.autoModelRouting !== false,
     decisionAgent: value.decisionAgent ?? 'auto',
-    commercialLoop: value.commercialLoop ? { enabled: true, worker: value.commercialLoop.worker ?? 'opencode', fetchReferences: value.commercialLoop.fetchReferences !== false, maxAlignmentAttempts: 2, references: [] } : { enabled: false },
+    commercialLoop: value.commercialLoop?.enabled === false ? { enabled: false } : { enabled: true, worker: value.commercialLoop?.worker ?? 'auto', fetchReferences: value.commercialLoop?.fetchReferences !== false, maxAlignmentAttempts: 2, references: [] },
     agents: value.agents ?? {},
   };
   if (value.models) config.models = structuredClone(value.models);
@@ -103,16 +104,11 @@ export async function saveProjectConfig(stateDir, config) {
 
 export function mergeAgentConfigs(projectAgents = {}, hostAgents = {}) {
   const merged = {};
-  for (const alias of new Set([...Object.keys(hostAgents), ...Object.keys(projectAgents)])) {
-    const host = hostAgents[alias] ?? {};
+  for (const [alias, host] of Object.entries(hostAgents)) {
     const project = projectAgents[alias] ?? {};
-    if (project.enabled === false) continue;
-    if (host.enabled === false && project.enabled !== true) continue;
-    const agent = { ...host, ...project };
-    // Browser project configuration must not inherit Host credentials, custom
-    // providers, or paid flags; those are Host-owned and rejected by validation.
-    for (const key of ['apiKey', 'apiKeyEnv', 'token', 'password', 'secret', 'openCodeProvider', 'paidApi']) delete agent[key];
-    merged[alias] = agent;
+    if (host.enabled !== true || project.enabled === false) continue;
+    // Browser owns selection only; authorized provider settings stay internal.
+    merged[alias] = structuredClone(host);
   }
   return merged;
 }
@@ -121,9 +117,8 @@ export function sanitizeProjectConfig(config) {
   const copy = clone(config);
   for (const key of ['apiKey', 'apiKeyEnv', 'token', 'password', 'secret']) delete copy[key];
   if (copy.agents) {
-    for (const agent of Object.values(copy.agents)) {
-      for (const key of ['apiKey', 'apiKeyEnv', 'token', 'password', 'secret', 'openCodeProvider', 'paidApi']) delete agent[key];
-    }
+    copy.agents = Object.fromEntries(Object.entries(copy.agents).map(([alias, agent]) => [alias, { ...(typeof agent.enabled === 'boolean' ? { enabled: agent.enabled } : {}) }]));
   }
+  delete copy.models;
   return copy;
 }

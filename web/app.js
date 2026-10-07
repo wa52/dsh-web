@@ -27,14 +27,21 @@ function render(data) {
     const configured = host.nativeConfigured;
     const st = host.native.state ?? 'idle';
     const statusEl = $('native-status');
-    const label = !configured ? '未配置' : st === 'streaming' ? '响应中…' : st === 'connecting' ? '连接中…' : st === 'error' ? `错误: ${host.native.lastError ?? '未知'}` : st === 'idle' ? '就绪' : st;
+    const label = !configured ? '未配置：请在 Host 启用 DSH Provider / Model' : st === 'streaming' ? '响应中…' : st === 'connecting' ? '连接中…' : st === 'error' ? `错误: ${host.native.lastError ?? '未知'}` : st === 'idle' ? (host.native.sessionId ? '就绪' : '已配置 · 未连接') : st === 'stopped' ? '已停止' : st;
     if (statusEl) { text(statusEl, label); statusEl.className = `tag${!configured || st === 'error' ? ' danger' : st === 'streaming' ? ' running' : ''}`; }
     $('native-send').disabled = !configured || st === 'connecting' || st === 'streaming';
-    $('native-stop').disabled = !configured || st !== 'streaming';
-    nativeConnected = configured && (st === 'idle' || st === 'streaming');
+    $('native-stop').disabled = !configured || !host.native.sessionId || ['stopped', 'error'].includes(st);
+    nativeConnected = Boolean(host.native.sessionId) && !['stopped', 'error'].includes(st);
+    const choice = host.nativeChoices?.[0];
+    if (choice && !$('native-provider').value && !$('native-model').value) {
+      $('native-provider').value = choice.provider;
+      $('native-model').value = choice.model;
+    }
   }
 
-  if (host.projectConfigured && host.project) renderProject(host.project);
+  if (host.projectConfigured) renderProject(host.projectWorld ?? data.project ?? { world: null, agents: [], running: false });
+  else for (const id of ['start', 'pause', 'cancel']) $(id).disabled = true;
+  if (host.projectError) text($('message'), host.projectError);
 }
 
 function updateModeTabs() {
@@ -144,7 +151,8 @@ $('native-form')?.addEventListener('submit', async event => {
   appendNative('user', prompt);
   $('native-prompt').value = '';
   try {
-    const start = !$('native-status')?.textContent?.includes('就绪');
+    $('native-send').disabled = true;
+    const start = !nativeConnected;
     if (start) {
       const provider = $('native-provider').value.trim();
       const model = $('native-model').value.trim();
@@ -160,6 +168,7 @@ $('native-form')?.addEventListener('submit', async event => {
     }
     await post('/api/native/chat', { prompt });
   } catch (error) { text($('message'), error.message); }
+  finally { await fetch('/api/state').then(response => response.json()).then(render).catch(() => {}); }
 });
 
 $('native-stop')?.addEventListener('click', async () => {
@@ -185,6 +194,7 @@ nativeStream.onmessage = event => {
     const last = nativeMessages.lastElementChild;
     if (last && last.classList.contains('assistant')) last.classList.add('done');
   }
+  if (['ready', 'done', 'error', 'stopped', 'close'].includes(msg.type)) fetch('/api/state').then(response => response.json()).then(render).catch(() => {});
   if (msg.type === 'error') text($('message'), `Native session error: ${msg.data.message ?? 'unknown'}`);
 };
 nativeStream.onerror = () => text($('connection'), '连接中断 · 自动重连');
@@ -205,7 +215,7 @@ $('setup-form')?.addEventListener('submit', async event => {
       maxActions: Number($('setup-maxActions').value),
       agentTimeoutMs: Number($('setup-agentTimeoutMs').value),
       testTimeoutMs: Number($('setup-testTimeoutMs').value),
-      commercialLoop: $('setup-commercialLoop').checked ? { enabled: true } : { enabled: false },
+      commercialLoop: { enabled: $('setup-commercialLoop').checked },
     };
     await post('/api/project/setup', config);
     text($('message'), '项目配置已保存。');

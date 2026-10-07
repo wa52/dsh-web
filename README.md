@@ -57,6 +57,24 @@ Web host 模式下的可用 Agent 别名从 `config.host.json` 或 `--host-agent
 若不存在则使用保守默认（OpenCode Go 启用，其余禁用），实际登录凭证继续由各自 CLI
 环境提供，不会写入浏览器可修改的配置。
 
+普通对话默认显示未配置。只有 Host 明确启用 `transport: "dsh"` 且指定
+`provider` / `model` 的连接才进入原生 SDK allowlist；OpenCode、Pi、Codex 的
+传输连接不是 DSH LLM binding。浏览器只能选择 allowlist 中的组合，不能更改
+可执行文件、环境、SDK profile、权限、provider 配置或付费设置。
+Host 设置 `nativeOptions.enabled: false` 时原生模式始终禁用。
+原生 SDK 由 `npm ci` 安装，通过 Node 加载 `@deepseek-ai/dsh/lib/bin.js`
+并使用 `--profile sdk`；显式 Node launcher 必须在 Host 设置对应 `argsPrefix`。
+配置账户缺失或模型未获授权时会显示启动错误；启用模式与点击启动不构成付费授权。
+
+Web 新建项目默认启用共同商业 Loop，自动选择已启用的 Host Builder 别名；
+可以在表单取消勾选以使用原项目 Loop。独立 Reviewer 仍需另一个可用的 Host 身份。
+浏览器项目 Agent 配置仅保存 `enabled` 选择，不能启用 Host 禁用的账户，
+也不能覆盖 Host 的模型、凭证、启动参数或付费策略；可信 provider 设置仅在服务端保留。
+`models` 路由登记表仍通过可信的 CLI 项目配置提供，Web setup 不接受覆盖。
+本地验证：先运行 `node --test tests/web-mode-switch.test.mjs`（仅协议 fixture），
+再运行 `npm test`；浏览器检查未配置提示、项目保存后的状态与停止后的模式切换。
+这些验证不代表商业交付或付费线上 SDK 验收。
+
 Windows 建议配置原生 `.exe` 的绝对路径，或 `executable: "node"` 加
 `argsPrefix: ["CLI入口的绝对路径"]`；不执行 `.cmd`、`.bat` 和拼接 shell 命令。
 凭证继续由各 CLI 自己管理，不写入项目配置或仓库。

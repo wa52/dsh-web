@@ -17,7 +17,8 @@ const agentCli = fileURLToPath(new URL('./fixtures/agent-cli.mjs', import.meta.u
 
 async function hostFixture(t, options = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-web-mode-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  let host;
+  t.after(async () => { try { await host?.close(); } finally { await rm(root, { recursive: true, force: true }); } });
   const repository = path.join(root, 'repo');
   await mkdir(repository, { recursive: true });
   await writeFile(path.join(repository, 'package.json'), '{"type":"module"}\n');
@@ -26,9 +27,25 @@ async function hostFixture(t, options = {}) {
   git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@localhost', '-c', 'commit.gpgSign=false', 'commit', '-m', 'Seed']);
   const stateDir = path.join(root, 'state');
   const hostAgents = options.hostAgents ?? { ...DEFAULT_HOST_AGENTS, dsh: { ...DEFAULT_HOST_AGENTS.dsh, enabled: true } };
-  const host = new WebHost({ stateDir, hostAgents, nativeOptions: { executable: process.execPath, argsPrefix: [sdkFixture], profile: 'sdk' }, ...options });
+  host = new WebHost({ stateDir, hostAgents, nativeOptions: { executable: process.execPath, argsPrefix: [sdkFixture], profile: 'sdk' }, ...options });
   await host.init();
   return { root, repository, stateDir, host };
+}
+
+// send() acknowledges dispatch; turn/end is the actual completion boundary.
+function nextTurn(session) {
+  let done, fail, timer;
+  const promise = new Promise((resolve, reject) => {
+    done = resolve;
+    fail = error => reject(new Error(error.message));
+    session.once('done', done);
+    session.once('error', fail);
+    timer = setTimeout(() => reject(new Error('Fixture turn completion timed out')), 10000);
+  });
+  const turn = promise.finally(() => { clearTimeout(timer); session.off('done', done); session.off('error', fail); });
+  // Cleanup remains safe when an assertion fails before awaiting completion.
+  turn.catch(() => {});
+  return turn;
 }
 
 async function serverFixture(t, options = {}) {
@@ -93,8 +110,12 @@ test('multi-turn same native session preserves sessionId', async t => {
   const { host } = await hostFixture(t);
   await host.startNativeSession();
   const id = host.nativeSession.sessionId;
+  const first = nextTurn(host.nativeSession);
   await host.nativeChat('first');
+  await first;
+  const second = nextTurn(host.nativeSession);
   await host.nativeChat('second');
+  await second;
   assert.equal(host.nativeSession.sessionId, id);
   assert.equal(host.nativeSession.history.length, 4); // user, assistant, user, assistant
   await host.close();
@@ -102,11 +123,13 @@ test('multi-turn same native session preserves sessionId', async t => {
 
 test('NativeSession reports truthful error when SDK is missing', async t => {
   const session = new NativeSession({ executable: '/nonexistent/dsh-sdk.mjs' });
+  t.after(() => session.dispose());
   await assert.rejects(session.start(), /not found|not installed|ENOENT/);
 });
 
 test('NativeSession reports initialization error for unauthorized model', async t => {
   const session = new NativeSession({ executable: process.execPath, argsPrefix: [sdkFixture], env: { DSH_SDK_FAIL: 'init' }, profile: 'sdk' });
+  t.after(() => session.dispose());
   await assert.rejects(session.start(), /no authorized model|initialization failed/i);
 });
 
@@ -131,7 +154,7 @@ test('WebHost rejects project setup while project loop is running', async t => {
     goal: 'Fix test', repository, stateDir, successCriteria: ['tests pass'],
     tests: [{ executable: process.execPath, args: ['--test', 'tests/acceptance.test.mjs'] }],
     maxActions: 1, agentTimeoutMs: 5000,
-    agents: { codex: { transport: 'codex', enabled: true } },
+    agents: { codex: { enabled: true } }, commercialLoop: { enabled: false },
   });
   host.startProjectLoop(1).catch(() => {});
   await new Promise(resolve => setTimeout(resolve, 300));
@@ -154,11 +177,13 @@ test('server exposes host mode and native SSE endpoints', async t => {
 });
 
 test('server mode switch and native chat via HTTP', async t => {
-  const { post, get } = await serverFixture(t);
+  const { post, get, host } = await serverFixture(t);
   const chat = await post('/api/native/start', { workspace: '.', provider: 'deepseek-official', model: 'deepseek-v4-flash' });
   assert.equal(chat.status, 200);
+  const completed = nextTurn(host.nativeSession);
   const send = await post('/api/native/chat', { prompt: 'hello' });
   assert.equal(send.status, 200);
+  await completed;
   const state = await get('/api/state');
   assert.equal(state.data.host.native.state, 'idle');
 });
@@ -179,9 +204,12 @@ test('server project setup persists config and switches to project mode', async 
 });
 
 test('server rejects native chat in project mode and project setup in native mode', async t => {
-  const { post, root, stateDir, repository } = await serverFixture(t);
+  const { post, root, stateDir, repository, host } = await serverFixture(t);
+  await host.startNativeSession();
+  const completed = nextTurn(host.nativeSession);
   const nativeChat = await post('/api/native/chat', { prompt: 'hello' });
   assert.equal(nativeChat.status, 200);
+  await completed;
   const setup = await post('/api/project/setup', { goal: 'x', repository, stateDir, successCriteria: ['s'], tests: [{ executable: 'node', args: [] }] });
   assert.equal(setup.status, 200);
   const badNative = await post('/api/native/chat', { prompt: 'hello' });
@@ -189,11 +217,11 @@ test('server rejects native chat in project mode and project setup in native mod
   assert.match(badNative.data.error, /Not in native/);
 });
 
-test('mergeAgentConfigs never enables paid API providers from browser selection', () => {
+test('mergeAgentConfigs preserves trusted Host provider settings internally', () => {
   const host = { opencode: { transport: 'opencode', openCodeProvider: { apiKeyEnv: 'KEY' }, enabled: true } };
   const project = { opencode: { enabled: true } };
   const merged = mergeAgentConfigs(project, host);
-  assert.equal(merged.opencode.openCodeProvider, undefined);
+  assert.deepEqual(merged.opencode.openCodeProvider, host.opencode.openCodeProvider);
   assert.equal(merged.opencode.enabled, true);
 });
 
@@ -206,7 +234,7 @@ test('project operation preserves review Gate and state/worktree isolation', asy
   const config = {
     goal: 'Fix fixture', repository, stateDir, successCriteria: ['tests pass'],
     tests: [{ executable: process.execPath, args: ['--test', 'tests/acceptance.test.mjs'] }],
-    maxActions: 1, agents: { codex: { transport: 'codex', enabled: true }, dsh: { transport: 'dsh', enabled: true } },
+    maxActions: 1, agents: { codex: { enabled: true }, dsh: { enabled: true } }, commercialLoop: { enabled: false },
     protectedPaths: ['tests/acceptance.test.mjs'],
   };
   await host.setupProject(config);
@@ -236,11 +264,13 @@ test('paid API is disabled by default and setup form rejects paid flags', async 
 
 test('NativeSession SSE streams assistant messages', async t => {
   const session = new NativeSession({ executable: process.execPath, argsPrefix: [sdkFixture], profile: 'sdk' });
+  t.after(() => session.dispose());
   const messages = [];
   session.on('message', msg => messages.push(msg));
   await session.start();
+  const completed = nextTurn(session);
   await session.send('hello world');
-  await new Promise(resolve => setTimeout(resolve, 200));
+  await completed;
   assert.ok(messages.length > 0);
   assert.ok(messages.some(m => m.delta.includes('Fixture response')));
   await session.dispose();
@@ -265,11 +295,13 @@ test('setup form refuses shell metacharacters in test executable', async t => {
 
 test('NativeSession fails promptly when the SDK reports a turn error', async t => {
   const session = new NativeSession({ executable: process.execPath, argsPrefix: [sdkFixture], env: { DSH_SDK_FAIL: 'turn' }, profile: 'sdk', provider: 'deepseek-official', model: 'deepseek-v4-flash' });
+  t.after(() => session.dispose());
   const errors = [];
   session.on('error', error => errors.push(error));
   await session.start();
+  const failed = assert.rejects(nextTurn(session), /DSH turn ended error/i);
   await session.send('hello');
-  await new Promise(resolve => setTimeout(resolve, 200));
+  await failed;
   assert.ok(errors.length > 0);
   assert.match(errors[0].message, /DSH turn ended error/i);
   await session.dispose();
@@ -291,4 +323,73 @@ test('HTTP native/start ignores browser executable override and uses Host allowl
   assert.equal(start.status, 200);
   const state = await get('/api/state');
   assert.equal(state.data.host.native.state, 'idle');
+});
+
+test('HTTP native/start cannot activate explicitly disabled native mode', async t => {
+  const { post, host } = await serverFixture(t, { nativeOptions: { enabled: false, executable: process.execPath, argsPrefix: [sdkFixture] } });
+  const result = await post('/api/native/start', {});
+  assert.equal(result.status, 400);
+  assert.match(result.data.error, /no enabled Host provider\/model allowlist/);
+  assert.equal(host.nativeSession, null);
+  assert.equal(host.view().nativeConfigured, false);
+});
+
+test('HTTP native/start requires a real enabled DSH binding, not another transport', async t => {
+  const { post, host } = await serverFixture(t, { hostAgents: {
+    dsh: { transport: 'dsh', enabled: false, provider: 'fixture', model: 'fixture-model' },
+    other: { transport: 'opencode', enabled: true, provider: 'fixture', model: 'fixture-model' },
+  } });
+  const result = await post('/api/native/start', { provider: 'fixture', model: 'fixture-model' });
+  assert.equal(result.status, 400);
+  assert.equal(host.nativeSession, null);
+  assert.deepEqual(host.view().nativeChoices, []);
+});
+
+test('mergeAgentConfigs prevents browser activation and preserves all trusted launcher fields', () => {
+  const host = {
+    active: { enabled: true, transport: 'opencode', executable: 'trusted', argsPrefix: ['trusted-entry'], env: { FIXTURE: 'trusted' }, openCodeProvider: { apiKeyEnv: 'HOST_KEY' }, paidApi: { endpoint: 'https://example.com' } },
+    disabled: { enabled: false, transport: 'dsh' },
+  };
+  const result = mergeAgentConfigs({ active: { enabled: true, executable: 'browser', argsPrefix: ['browser-entry'], env: { FIXTURE: 'browser' }, paidApi: false }, disabled: { enabled: true }, unknown: { enabled: true } }, host);
+  assert.deepEqual(Object.keys(result), ['active']);
+  assert.deepEqual(result.active, host.active);
+  result.active.env.FIXTURE = 'changed';
+  assert.equal(host.active.env.FIXTURE, 'trusted');
+  assert.deepEqual(mergeAgentConfigs({ active: { enabled: false } }, host), {});
+});
+
+test('HTTP setup rejects Host-owned launcher and routing overrides', async t => {
+  const { post, stateDir, repository } = await serverFixture(t);
+  const config = { goal: 'fixture', repository, stateDir, successCriteria: ['pass'], tests: [{ executable: 'node', args: [] }] };
+  for (const field of ['executable', 'env', 'argsPrefix', 'provider', 'paidApi']) {
+    const result = await post('/api/project/setup', { ...config, agents: { opencodeGo: { enabled: true, [field]: 'browser' } } });
+    assert.equal(result.status, 400, field);
+    assert.match(result.data.error, /Host-owned/);
+  }
+  const result = await post('/api/project/setup', { ...config, models: [] });
+  assert.equal(result.status, 400);
+  assert.match(result.data.error, /models are Host-owned/);
+});
+
+test('NativeSession promptly reports prompt JSON-RPC errors and confirms cleanup', async t => {
+  const session = new NativeSession({ executable: process.execPath, argsPrefix: [sdkFixture], env: { DSH_SDK_FAIL: 'prompt' } });
+  t.after(() => session.dispose());
+  await session.start();
+  const failed = assert.rejects(nextTurn(session), /Prompt rejected: selected model is not authorized/);
+  await session.send('fixture');
+  await failed;
+  await session.dispose();
+  assert.equal(session.state, 'error');
+  assert.equal(session.child, null);
+  assert.equal(session.history.filter(item => item.role === 'assistant').length, 0);
+});
+
+test('Web setup defaults to commercial loop with an enabled Host worker alias', async t => {
+  const { host, repository, stateDir } = await hostFixture(t, { hostAgents: {
+    authorized: { transport: 'opencode', enabled: true, executable: process.execPath, argsPrefix: [agentCli], env: { DSH_PROTOCOL_FIXTURE: 'opencode' } },
+  } });
+  await host.setupProject({ goal: 'fixture', repository, stateDir, successCriteria: ['pass'], tests: [{ executable: 'node', args: [] }] });
+  assert.equal(host.projectConfig.commercialLoop.enabled, true);
+  assert.equal(host.projectRuntime.config.commercialLoop.worker, 'authorized');
+  assert.equal(host.view().projectWorld.world.goal, 'fixture');
 });

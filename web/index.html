@@ -12,8 +12,8 @@
     <div class="chat-header"><span class="eyebrow">NATIVE HARNESS SESSION</span><span id="native-status" class="tag">未连接</span></div>
     <div id="native-messages" class="chat-messages" aria-live="polite"></div>
     <form id="native-form" class="chat-input">
-      <textarea id="native-prompt" rows="2" placeholder="输入提示词，按 Enter 发送；Shift+Enter 换行。" required></textarea>
-      <button type="submit" class="primary" id="native-send">发送</button>
+      <textarea id="native-prompt" rows="2" placeholder="输入提示词，点击发送。" aria-label="对话提示词" required></textarea>
+      <button type="submit" class="primary" id="native-send" disabled>发送</button>
       <button type="button" id="native-stop" class="danger" disabled>停止</button>
     </form>
     <div class="chat-settings">
@@ -44,7 +44,7 @@
       <label>Agent 超时（毫秒） <input id="setup-agentTimeoutMs" type="number" min="1000" max="3600000" value="300000" required></label>
       <label>测试超时（毫秒） <input id="setup-testTimeoutMs" type="number" min="1000" max="600000" value="60000" required></label>
     </div>
-    <label>启用共同商业 Loop <input id="setup-commercialLoop" type="checkbox"></label>
+    <label>启用共同商业 Loop（研究、对齐与独立审核） <input id="setup-commercialLoop" type="checkbox" checked></label>
     <div class="setup-actions"><button type="submit" class="primary">保存并进入项目模式</button></div>
   </form>
 </section>
@@ -60,9 +60,9 @@
 
 <div class="project-controls" id="project-controls" hidden>
   <label>行动预算 <input id="budget" type="number" min="1" max="100" value="10"></label>
-  <button id="start" class="primary">启动 Loop</button>
-  <button id="pause">暂停</button>
-  <button id="cancel" class="danger">终止当前运行</button>
+  <button id="start" class="primary" disabled>启动 Loop</button>
+  <button id="pause" disabled>暂停</button>
+  <button id="cancel" class="danger" disabled>终止当前运行</button>
 </div>
 
 <footer>DSH Web · Multi-Agent Autonomous Runtime<span id="updated">等待数据</span></footer>
