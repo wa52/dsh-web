@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { Context } from '@deepseek-ai/cordis';
 import * as control from '../plugins/autonomous-control-loop/index.js';
 import { NativeSession, createNativeSession } from './native-session.mjs';
@@ -37,7 +37,8 @@ export class WebHost extends EventEmitter {
     if (this.stateDir) await mkdir(this.stateDir, { recursive: true });
     if (this.stateDir) {
       try {
-        const loaded = await loadProjectConfig(this.stateDir);
+        const hostState = await this._readHostState();
+        const loaded = await loadProjectConfig(hostState?.projectStateDir ?? this.stateDir);
         if (loaded) {
           this.projectConfig = loaded;
           this.mode = 'project';
@@ -114,7 +115,21 @@ export class WebHost extends EventEmitter {
 
   async _saveHostState() {
     if (!this.hostStateFile) return;
-    await atomicJson(this.hostStateFile, { mode: this.mode, projectConfigured: Boolean(this.projectConfig), updatedAt: new Date().toISOString() });
+    await atomicJson(this.hostStateFile, {
+      mode: this.mode,
+      projectConfigured: Boolean(this.projectConfig),
+      projectStateDir: this.projectConfig?.stateDir,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  async _readHostState() {
+    if (!this.hostStateFile) return null;
+    try { return JSON.parse(await readFile(this.hostStateFile, 'utf8')); }
+    catch (error) {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    }
   }
 
   async startNativeSession(options = {}) {
@@ -192,7 +207,7 @@ export class WebHost extends EventEmitter {
       }
     }
     config = { ...config, permissions };
-    const saved = await saveProjectConfig(this.stateDir ?? config.stateDir, config);
+    const saved = await saveProjectConfig(config.stateDir, config);
     if (this.projectRuntime) { await this.projectRuntime.close(); this.projectRuntime = null; }
     this.projectConfig = await loadProjectConfig(path.dirname(saved));
     this.lastProjectError = null;
@@ -258,7 +273,8 @@ export class WebHost extends EventEmitter {
     this._assertNotSwitching();
     if (this._isBusy()) throw new Error('Cannot reload project configuration while work is running');
     if (!this.stateDir) throw new Error('No stateDir configured');
-    const config = await loadProjectConfig(this.stateDir);
+    const hostState = await this._readHostState();
+    const config = await loadProjectConfig(hostState?.projectStateDir ?? this.stateDir);
     if (!config) throw new Error('No saved project configuration');
     this.projectConfig = config;
     if (this.mode !== 'project') await this.setMode('project');

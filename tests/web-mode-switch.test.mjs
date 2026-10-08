@@ -190,8 +190,9 @@ test('server mode switch and native chat via HTTP', async t => {
 
 test('server project setup persists config and switches to project mode', async t => {
   const { post, get, root, stateDir, repository } = await serverFixture(t);
+  const projectStateDir = path.join(root, 'project-state');
   const setup = await post('/api/project/setup', {
-    goal: 'Build fixture', repository, stateDir, successCriteria: ['pass'],
+    goal: 'Build fixture', repository, stateDir: projectStateDir, successCriteria: ['pass'],
     tests: [{ executable: 'node', args: [] }], maxActions: 3,
   });
   assert.equal(setup.status, 200);
@@ -199,8 +200,16 @@ test('server project setup persists config and switches to project mode', async 
   const state = await get('/api/state');
   assert.equal(state.data.host.mode, 'project');
   assert.equal(state.data.host.projectConfigured, true);
-  const persisted = JSON.parse(await readFile(path.join(stateDir, 'dsh-web-project.json'), 'utf8'));
+  await assert.rejects(readFile(path.join(stateDir, 'dsh-web-project.json'), 'utf8'), /ENOENT/);
+  const hostState = JSON.parse(await readFile(path.join(stateDir, 'dsh-web-host.json'), 'utf8'));
+  assert.equal(hostState.projectStateDir, projectStateDir);
+  const persisted = JSON.parse(await readFile(path.join(projectStateDir, 'dsh-web-project.json'), 'utf8'));
   assert.equal(persisted.goal, 'Build fixture');
+  const restarted = new WebHost({ stateDir, hostAgents: { ...DEFAULT_HOST_AGENTS, dsh: { ...DEFAULT_HOST_AGENTS.dsh, enabled: true } } });
+  t.after(() => restarted.close());
+  await restarted.init();
+  assert.equal(restarted.view().projectConfig.stateDir, projectStateDir);
+  assert.equal(restarted.mode, 'project');
 });
 
 test('server rejects native chat in project mode and project setup in native mode', async t => {

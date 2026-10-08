@@ -83,20 +83,22 @@ test('Web setup and restart retain Host model routing without persisting or expo
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-web-host-models-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repository = await repositoryAt(root);
-  const stateDir = path.join(root, 'state');
+  const hostStateDir = path.join(root, 'host-state');
+  const projectStateDir = path.join(root, 'project-state');
   const trustedAgents = hostAgents();
-  const host = new WebHost({ stateDir, hostAgents: trustedAgents, hostModels: models });
+  const host = new WebHost({ stateDir: hostStateDir, hostAgents: trustedAgents, hostModels: models });
   await host.init();
-  await host.setupProject(projectSetup(repository, stateDir));
+  await host.setupProject(projectSetup(repository, projectStateDir));
 
   assertRouted(host.projectRuntime);
   assert.equal(host.view().projectConfig.models, undefined);
-  const saved = JSON.parse(await readFile(path.join(stateDir, 'dsh-web-project.json'), 'utf8'));
+  await assert.rejects(readFile(path.join(hostStateDir, 'dsh-web-project.json'), 'utf8'), /ENOENT/);
+  const saved = JSON.parse(await readFile(path.join(projectStateDir, 'dsh-web-project.json'), 'utf8'));
   assert.equal(saved.models, undefined);
   assert.equal(JSON.stringify(saved).includes('host-routine'), false);
   await host.close();
 
-  const restarted = new WebHost({ stateDir, hostAgents: trustedAgents, hostModels: models });
+  const restarted = new WebHost({ stateDir: hostStateDir, hostAgents: trustedAgents, hostModels: models });
   t.after(() => restarted.close());
   await restarted.init();
   assert.equal(restarted.mode, 'project');
