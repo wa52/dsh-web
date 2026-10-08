@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -210,6 +210,45 @@ test('server project setup persists config and switches to project mode', async 
   await restarted.init();
   assert.equal(restarted.view().projectConfig.stateDir, projectStateDir);
   assert.equal(restarted.mode, 'project');
+});
+
+test('HTTP setup rejects repository state paths before creating config, pointer or runtime', async t => {
+  const { post, host, root, stateDir, repository } = await serverFixture(t);
+  const nestedState = path.join(repository, 'nested-state');
+  const canonicalState = path.join(root, 'canonical-state');
+  await symlink(repository, canonicalState, process.platform === 'win32' ? 'junction' : 'dir');
+  const config = state => ({ goal: 'fixture', repository, stateDir: state, successCriteria: ['pass'], tests: [{ executable: 'node', args: [] }] });
+
+  for (const [label, candidate] of [['equal', repository], ['nested', nestedState], ['canonical', canonicalState]]) {
+    const result = await post('/api/project/setup', config(candidate));
+    assert.equal(result.status, 400, label);
+    assert.match(result.data.error, /stateDir must be outside/i, label);
+    await assert.rejects(readFile(path.join(candidate, 'dsh-web-project.json'), 'utf8'), { code: 'ENOENT' }, label);
+    await assert.rejects(readFile(path.join(stateDir, 'dsh-web-host.json'), 'utf8'), { code: 'ENOENT' }, label);
+    assert.equal(host.projectRuntime, null, label);
+    assert.equal(host.projectConfig, null, label);
+    assert.equal(host.mode, 'native', label);
+  }
+  await assert.rejects(stat(nestedState), { code: 'ENOENT' });
+});
+
+test('HTTP setup accepts distinct external project state and restarts from Host pointer', async t => {
+  const { post, root, stateDir, repository } = await serverFixture(t);
+  const projectStateDir = path.join(root, 'valid-external-state');
+  const setup = await post('/api/project/setup', {
+    goal: 'External state fixture', repository, stateDir: projectStateDir, successCriteria: ['pass'], tests: [{ executable: 'node', args: [] }],
+  });
+  assert.equal(setup.status, 200, JSON.stringify(setup.data));
+  await assert.rejects(readFile(path.join(stateDir, 'dsh-web-project.json'), 'utf8'), { code: 'ENOENT' });
+  assert.equal(JSON.parse(await readFile(path.join(stateDir, 'dsh-web-host.json'), 'utf8')).projectStateDir, projectStateDir);
+  assert.equal(JSON.parse(await readFile(path.join(projectStateDir, 'dsh-web-project.json'), 'utf8')).stateDir, projectStateDir);
+
+  const restarted = new WebHost({ stateDir, hostAgents: { ...DEFAULT_HOST_AGENTS, dsh: { ...DEFAULT_HOST_AGENTS.dsh, enabled: true } } });
+  t.after(() => restarted.close());
+  await restarted.init();
+  assert.equal(restarted.mode, 'project');
+  assert.equal(restarted.view().projectConfig.stateDir, projectStateDir);
+  assert.ok(restarted.projectRuntime);
 });
 
 test('server rejects native chat in project mode and project setup in native mode', async t => {

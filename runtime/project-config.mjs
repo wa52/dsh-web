@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { atomicJson, clone } from './store.mjs';
 
 export const DEFAULT_HOST_AGENTS = {
@@ -20,6 +20,50 @@ function assertNonEmptyString(label, value) {
 function assertStringArray(label, value, max = 100) {
   if (!Array.isArray(value) || value.length === 0 || value.some(item => typeof item !== 'string' || !item.trim())) throw new Error(`${label} must be a non-empty array of non-empty strings`);
   if (value.length > max) throw new Error(`${label} exceeds ${max} items`);
+}
+
+function comparable(value) {
+  const resolved = path.resolve(value);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function isInsideOrEqual(parent, child) {
+  const relative = path.relative(comparable(parent), comparable(child));
+  return !relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+}
+
+async function canonicalPathWithoutCreate(value) {
+  const target = path.resolve(value);
+  let cursor = target;
+  const suffix = [];
+  while (true) {
+    try {
+      await stat(cursor);
+      const existing = await realpath(cursor);
+      return suffix.length ? path.join(existing, ...suffix.reverse()) : existing;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) throw new Error(`Path has no existing parent: ${target}`);
+      suffix.push(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+export async function assertProjectStateOutsideRepository(repository, stateDir) {
+  assertNonEmptyString('repository', repository);
+  assertAbsolute('repository', repository);
+  assertNonEmptyString('stateDir', stateDir);
+  assertAbsolute('stateDir', stateDir);
+  const repoPath = path.resolve(repository);
+  const statePath = path.resolve(stateDir);
+  if (isInsideOrEqual(repoPath, statePath)) throw new Error('Project stateDir must be outside the target repository');
+  const [repoReal, stateReal] = await Promise.all([
+    canonicalPathWithoutCreate(repoPath),
+    canonicalPathWithoutCreate(statePath),
+  ]);
+  if (isInsideOrEqual(repoReal, stateReal)) throw new Error('Project stateDir must be outside the target repository');
 }
 
 export function validateProjectConfig(value, { allowCredentials = false } = {}) {
@@ -105,9 +149,10 @@ export async function loadProjectConfig(stateDir) {
   }
 }
 
-export async function saveProjectConfig(stateDir, config) {
+export async function saveProjectConfig(_stateDir, config) {
   const sanitized = validateProjectConfig(config);
-  const dir = path.resolve(stateDir);
+  await assertProjectStateOutsideRepository(sanitized.repository, sanitized.stateDir);
+  const dir = sanitized.stateDir;
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, 'dsh-web-project.json');
   await atomicJson(file, sanitized);

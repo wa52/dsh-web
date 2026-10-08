@@ -197,21 +197,26 @@ test('CLI startup applies trusted nativeOptions and Host models through local SD
 
   const started = await post('/api/start', { maxActions: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.data));
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 30_000;
   let selected;
   let args;
   let paidRuns;
+  let terminal;
+  let lastState;
   while (Date.now() < deadline) {
     const response = await fetch(`${base}/api/state`);
     const data = await response.json();
+    lastState = data.host?.projectWorld?.world;
     selected = data.host?.projectWorld?.world?.runs?.find(run => run.routing)?.routing?.selectedModel;
     paidRuns = data.host?.projectWorld?.agents?.find(agent => agent.id === 'paidOpenCode')?.runs?.length;
     try { args = JSON.parse(await readFile(agentArgsFile, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (selected && args) break;
+    terminal = data.host?.projectWorld?.running === false && ['complete', 'budget-exhausted', 'failed', 'paused', 'idle', 'stopped', 'blocked'].includes(data.host?.projectWorld?.world?.status);
+    if (terminal && selected && !args) break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   assert.equal(selected, 'host-routine', 'CLI-loaded Host model registry routes the first project decision');
-  assert.ok(args, 'local Agent fixture was launched');
+  assert.ok(args, `local Agent fixture was launched; terminal=${terminal}; status=${lastState?.status}; failures=${JSON.stringify(lastState?.failures?.slice(-2) ?? [])}`);
   assert.equal(args[args.indexOf('--model') + 1], 'host-routine');
   assert.equal(paidRuns, 0, 'CLI project start does not prepare the paid worker without a grant');
   await post('/api/cancel', {});

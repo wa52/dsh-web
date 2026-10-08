@@ -6,7 +6,7 @@ import * as control from '../plugins/autonomous-control-loop/index.js';
 import { NativeSession, createNativeSession } from './native-session.mjs';
 import { createAgentAdapter } from './adapters.mjs';
 import { ProjectRuntime } from './project.mjs';
-import { loadProjectConfig, saveProjectConfig, mergeAgentConfigs, DEFAULT_HOST_AGENTS, sanitizeProjectConfig, validateBrowserProjectSetup } from './project-config.mjs';
+import { loadProjectConfig, saveProjectConfig, mergeAgentConfigs, DEFAULT_HOST_AGENTS, sanitizeProjectConfig, validateBrowserProjectSetup, assertProjectStateOutsideRepository } from './project-config.mjs';
 import { atomicJson } from './store.mjs';
 import { redact } from './process.mjs';
 
@@ -216,6 +216,7 @@ export class WebHost extends EventEmitter {
       }
     }
     config = { ...config, permissions };
+    await assertProjectStateOutsideRepository(config.repository, config.stateDir);
     const saved = await saveProjectConfig(config.stateDir, config);
     if (this.projectRuntime) { await this.projectRuntime.close(); this.projectRuntime = null; }
     this.projectConfig = await loadProjectConfig(path.dirname(saved));
