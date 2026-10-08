@@ -82,6 +82,18 @@ export function validateProjectConfig(value, { allowCredentials = false } = {}) 
   return config;
 }
 
+export function validateBrowserProjectSetup(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Project configuration must be an object');
+  if (Object.hasOwn(value, 'autoModelRouting')) throw new Error('autoModelRouting is Host-owned; browser setup cannot override model routing policy');
+  if (Object.hasOwn(value, 'decisionAgent')) throw new Error('decisionAgent is Host-owned; browser setup cannot override decision routing policy');
+  if (value.commercialLoop !== undefined) {
+    if (!value.commercialLoop || typeof value.commercialLoop !== 'object' || Array.isArray(value.commercialLoop)) throw new Error('commercialLoop must be an object');
+    for (const key of Object.keys(value.commercialLoop)) {
+      if (key !== 'enabled') throw new Error(`commercialLoop.${key} is Host-owned; browser setup can only change the commercial enabled checkbox`);
+    }
+  }
+}
+
 export async function loadProjectConfig(stateDir) {
   try {
     const file = path.join(path.resolve(stateDir), 'dsh-web-project.json');

@@ -380,6 +380,34 @@ test('HTTP setup rejects Host-owned launcher and routing overrides', async t => 
   assert.match(result.data.error, /models are Host-owned/);
 });
 
+test('HTTP setup rejects browser routing policy overrides without replacing saved runtime', async t => {
+  const { post, host, root, repository } = await serverFixture(t, { hostAgents: {
+    opencodeGo: { ...DEFAULT_HOST_AGENTS.opencodeGo, enabled: true, executable: process.execPath, argsPrefix: [agentCli], env: { DSH_PROTOCOL_FIXTURE: 'opencode' } },
+    paidCommercial: { transport: 'opencode', connectionId: 'paid-account', enabled: true, executable: process.execPath, argsPrefix: [agentCli], env: { DSH_PROTOCOL_FIXTURE: 'opencode' }, paidApi: { endpoint: 'https://api.example.invalid' } },
+  } });
+  const stateDir = path.join(root, 'project-state');
+  const config = { goal: 'fixture', repository, stateDir, successCriteria: ['pass'], tests: [{ executable: 'node', args: [] }] };
+  const valid = await post('/api/project/setup', config);
+  assert.equal(valid.status, 200);
+  const savedFile = path.join(stateDir, 'dsh-web-project.json');
+  const savedBefore = await readFile(savedFile, 'utf8');
+  const runtimeBefore = host.projectRuntime;
+  const runtimeConfigBefore = JSON.stringify(host.projectRuntime.config);
+
+  for (const [label, override, expected] of [
+    ['autoModelRouting', { autoModelRouting: false }, /autoModelRouting is Host-owned/],
+    ['decisionAgent', { decisionAgent: 'paidCommercial' }, /decisionAgent is Host-owned/],
+    ['commercial worker', { commercialLoop: { enabled: true, worker: 'paidCommercial' } }, /commercialLoop\.worker is Host-owned/],
+  ]) {
+    const result = await post('/api/project/setup', { ...config, ...override });
+    assert.equal(result.status, 400, label);
+    assert.match(result.data.error, expected, label);
+    assert.equal(await readFile(savedFile, 'utf8'), savedBefore, label);
+    assert.equal(host.projectRuntime, runtimeBefore, label);
+    assert.equal(JSON.stringify(host.projectRuntime.config), runtimeConfigBefore, label);
+  }
+});
+
 test('NativeSession promptly reports prompt JSON-RPC errors and confirms cleanup', async t => {
   const session = new NativeSession({ executable: process.execPath, argsPrefix: [sdkFixture], env: { DSH_SDK_FAIL: 'prompt' } });
   t.after(() => session.dispose());
