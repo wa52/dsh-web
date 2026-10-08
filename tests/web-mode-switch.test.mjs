@@ -212,8 +212,17 @@ test('server project setup persists config and switches to project mode', async 
   assert.equal(restarted.mode, 'project');
 });
 
-test('HTTP setup rejects repository state paths before creating config, pointer or runtime', async t => {
+test('HTTP setup rejects repository state paths before writes or replacing an existing runtime', async t => {
   const { post, host, root, stateDir, repository } = await serverFixture(t);
+  const validStateDir = path.join(root, 'valid-project-state');
+  const valid = await post('/api/project/setup', {
+    goal: 'existing project', repository, stateDir: validStateDir,
+    successCriteria: ['pass'], tests: [{ executable: 'node', args: [] }],
+  });
+  assert.equal(valid.status, 200, JSON.stringify(valid.data));
+  const existingRuntime = host.projectRuntime;
+  const existingConfig = await readFile(path.join(validStateDir, 'dsh-web-project.json'), 'utf8');
+  const existingPointer = await readFile(path.join(stateDir, 'dsh-web-host.json'), 'utf8');
   const nestedState = path.join(repository, 'nested-state');
   const canonicalState = path.join(root, 'canonical-state');
   await symlink(repository, canonicalState, process.platform === 'win32' ? 'junction' : 'dir');
@@ -224,10 +233,11 @@ test('HTTP setup rejects repository state paths before creating config, pointer 
     assert.equal(result.status, 400, label);
     assert.match(result.data.error, /stateDir must be outside/i, label);
     await assert.rejects(readFile(path.join(candidate, 'dsh-web-project.json'), 'utf8'), { code: 'ENOENT' }, label);
-    await assert.rejects(readFile(path.join(stateDir, 'dsh-web-host.json'), 'utf8'), { code: 'ENOENT' }, label);
-    assert.equal(host.projectRuntime, null, label);
-    assert.equal(host.projectConfig, null, label);
-    assert.equal(host.mode, 'native', label);
+    assert.equal(await readFile(path.join(validStateDir, 'dsh-web-project.json'), 'utf8'), existingConfig, label);
+    assert.equal(await readFile(path.join(stateDir, 'dsh-web-host.json'), 'utf8'), existingPointer, label);
+    assert.equal(host.projectRuntime, existingRuntime, label);
+    assert.equal(host.projectConfig.stateDir, validStateDir, label);
+    assert.equal(host.mode, 'project', label);
   }
   await assert.rejects(stat(nestedState), { code: 'ENOENT' });
 });
