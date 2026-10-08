@@ -408,12 +408,13 @@ test('mergeAgentConfigs prevents browser activation and preserves all trusted la
     active: { enabled: true, transport: 'opencode', executable: 'trusted', argsPrefix: ['trusted-entry'], env: { FIXTURE: 'trusted' }, openCodeProvider: { apiKeyEnv: 'HOST_KEY' }, paidApi: { endpoint: 'https://example.com' } },
     disabled: { enabled: false, transport: 'dsh' },
   };
-  const result = mergeAgentConfigs({ active: { enabled: true, executable: 'browser', argsPrefix: ['browser-entry'], env: { FIXTURE: 'browser' }, paidApi: false }, disabled: { enabled: true }, unknown: { enabled: true } }, host);
+  const result = mergeAgentConfigs({ active: { enabled: true, executable: 'browser', argsPrefix: ['browser-entry'], env: { FIXTURE: 'browser' }, paidApi: false }, disabled: { enabled: true } }, host);
   assert.deepEqual(Object.keys(result), ['active']);
   assert.deepEqual(result.active, host.active);
   result.active.env.FIXTURE = 'changed';
   assert.equal(host.active.env.FIXTURE, 'trusted');
   assert.deepEqual(mergeAgentConfigs({ active: { enabled: false } }, host), {});
+  assert.throws(() => mergeAgentConfigs({ unknown: { enabled: true } }, host), /Unknown Host connection alias/);
 });
 
 test('HTTP setup rejects Host-owned launcher and routing overrides', async t => {

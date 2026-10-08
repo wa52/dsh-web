@@ -208,6 +208,8 @@ export class WebHost extends EventEmitter {
     this._assertNotSwitching();
     if (this._isBusy()) throw Object.assign(new Error('Cannot change project setup while work is running'), { code: 'RUNNING' });
     validateBrowserProjectSetup(config);
+    // Validate aliases before persistence or replacing the active runtime.
+    mergeAgentConfigs(config.agents ?? {}, this.hostAgents);
     const permissions = { read: true, write: true, shell: false, network: false, gitCommit: false };
     if (config.permissions !== undefined) {
       if (!config.permissions || typeof config.permissions !== 'object' || Array.isArray(config.permissions)
@@ -245,11 +247,11 @@ export class WebHost extends EventEmitter {
 
   async _loadProjectRuntime() {
     if (!this.projectConfig) throw new Error('No project configuration');
+    let agentEntries = mergeAgentConfigs(this.projectConfig.agents, this.hostAgents);
     if (this.ctx) { await this.fiber.dispose(); this.ctx = null; this.fiber = null; }
     this.ctx = new Context();
     this.fiber = this.ctx.plugin(control);
     await new Promise(resolve => setImmediate(resolve));
-    let agentEntries = mergeAgentConfigs(this.projectConfig.agents, this.hostAgents);
     const runtimeConfig = { ...this.projectConfig };
     if (runtimeConfig.commercialLoop?.enabled) {
       const resolvedWorker = this._resolveWorkerAlias(runtimeConfig.commercialLoop.worker, agentEntries);

@@ -84,6 +84,7 @@ export function validateProjectConfig(value, { allowCredentials = false } = {}) 
     for (const key of ['apiKey', 'apiKeyEnv', 'token', 'password', 'secret']) {
       if (value[key] !== undefined) throw new Error(`Credential field ${key} is not allowed in sanitized project configuration`);
     }
+    if (value.agents !== undefined && (!value.agents || typeof value.agents !== 'object' || Array.isArray(value.agents))) throw new Error('agents must be an object of connection selections');
     if (value.agents) {
       for (const [alias, agent] of Object.entries(value.agents)) {
         if (!agent || typeof agent !== 'object' || Array.isArray(agent)) throw new Error(`Invalid agent selection for ${alias}`);
@@ -160,10 +161,17 @@ export async function saveProjectConfig(_stateDir, config) {
 }
 
 export function mergeAgentConfigs(projectAgents = {}, hostAgents = {}) {
+  if (!projectAgents || typeof projectAgents !== 'object' || Array.isArray(projectAgents)) throw new Error('Project agent selection must be an object');
+  const explicit = Object.keys(projectAgents).length > 0;
+  for (const [alias, selection] of Object.entries(projectAgents)) {
+    if (!Object.hasOwn(hostAgents, alias)) throw new Error(`Unknown Host connection alias: ${alias}`);
+    if (!selection || typeof selection !== 'object' || Array.isArray(selection)
+      || (selection.enabled !== undefined && typeof selection.enabled !== 'boolean')) throw new Error(`Invalid project selection for Host connection ${alias}`);
+  }
   const merged = {};
   for (const [alias, host] of Object.entries(hostAgents)) {
     const project = projectAgents[alias] ?? {};
-    if (host.enabled !== true || project.enabled === false) continue;
+    if (host.enabled !== true || (explicit ? project.enabled !== true : project.enabled === false)) continue;
     // Browser owns selection only; authorized provider settings stay internal.
     merged[alias] = structuredClone(host);
   }
