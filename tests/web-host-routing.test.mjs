@@ -126,10 +126,37 @@ async function waitForServer(child, base) {
 test('CLI startup applies trusted nativeOptions and Host models through local SDK and Agent fixtures', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-cli-host-settings-'));
   let child;
+  let base;
   t.after(async () => {
-    if (child && child.exitCode === null) {
-      child.kill();
-      await Promise.race([new Promise(resolve => child.once('close', resolve)), new Promise(resolve => setTimeout(resolve, 5000))]);
+    if (child) {
+      if (child.exitCode === null && base) {
+        const response = await fetch(`${base}/api/cancel`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-DSH-Control': '1', Origin: base }, body: '{}',
+        });
+        assert.equal(response.ok, true, `project cancellation failed: HTTP ${response.status}`);
+        const deadline = Date.now() + 30_000;
+        let state;
+        while (Date.now() < deadline) {
+          const status = await fetch(`${base}/api/state`);
+          if (!status.ok) throw new Error(`Cannot confirm project idle before CLI teardown: HTTP ${status.status}`);
+          state = await status.json();
+          if (state.host?.projectRunning === false) break;
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        assert.equal(state?.host?.projectRunning, false, 'project controller did not confirm idle; preserving fixture for diagnosis');
+      }
+      if (child.exitCode === null) {
+        let timer;
+        try {
+          const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+          child.kill('SIGTERM');
+          const result = await Promise.race([
+            closed,
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('CLI Host did not close within 30 seconds; preserving fixture for diagnosis')), 30_000); }),
+          ]);
+          assert.ok(result, 'CLI Host close must be confirmed before fixture cleanup');
+        } finally { clearTimeout(timer); }
+      }
     }
     await rm(root, { recursive: true, force: true });
   });
@@ -166,7 +193,7 @@ test('CLI startup applies trusted nativeOptions and Host models through local SD
   let stderr = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', chunk => { stderr += chunk; });
-  const base = `http://127.0.0.1:${port}`;
+  base = `http://127.0.0.1:${port}`;
   await waitForServer(child, base).catch(error => { throw new Error(`${error.message}; ${stderr}`); });
 
   const post = async (endpoint, body) => {
