@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-08T09:47:58.924Z",
+  "feature": "Web entry modes: original Harness SDK conversation and autonomous commercial project runtime",
+  "baseline": "662457584b2360377f8a26b71a5157c97134a311",
+  "qualifiedSourceCommit": "0f66133ec0afebe833c2d3b71040acb29ac500b5",
+  "qualification": {
+    "phase": "MERGE_READY",
+    "protectedOriginalFilesIntact": true,
+    "snapshotHash": "68f8170011d83b524cb37e5d0a75aa2a3f2846354f7a6a2bad66be9367d66702",
+    "builderTests": [
+      {
+        "passed": true,
+        "counts": {
+          "tests": 200,
+          "pass": 199,
+          "fail": 0,
+          "skipped": 1
+        },
+        "supplementalProbes": [
+          "check-connection-scope",
+          "check-paid-token-reuse",
+          "check-partial-grant-routing",
+          "check-paid-review-independence",
+          "check-exhausted-grant-fallback",
+          "check-web-native-disabled"
+        ]
+      }
+    ],
+    "cleanCommittedTreeTests": [
+      {
+        "passed": true,
+        "counts": {
+          "tests": 200,
+          "pass": 199,
+          "fail": 0,
+          "skipped": 1
+        },
+        "supplementalProbes": [
+          "check-connection-scope",
+          "check-paid-token-reuse",
+          "check-partial-grant-routing",
+          "check-paid-review-independence",
+          "check-exhausted-grant-fallback",
+          "check-web-native-disabled"
+        ]
+      }
+    ],
+    "reviews": [
+      {
+        "reviewer": "codex-security",
+        "capability": "security",
+        "verdict": "pass",
+        "blockingRisks": [],
+        "commit": "0f66133ec0afebe833c2d3b71040acb29ac500b5",
+        "snapshotHash": "68f8170011d83b524cb37e5d0a75aa2a3f2846354f7a6a2bad66be9367d66702",
+        "model": "gpt-5.5",
+        "transport": "native Codex CLI",
+        "readOnly": true,
+        "independentGitWorktree": true
+      },
+      {
+        "reviewer": "codex-review",
+        "capability": "review",
+        "verdict": "pass",
+        "blockingRisks": [],
+        "commit": "0f66133ec0afebe833c2d3b71040acb29ac500b5",
+        "snapshotHash": "68f8170011d83b524cb37e5d0a75aa2a3f2846354f7a6a2bad66be9367d66702",
+        "model": "gpt-5.5",
+        "transport": "native Codex CLI",
+        "readOnly": true,
+        "independentGitWorktree": true
+      }
+    ]
+  },
+  "implementation": {
+    "transport": "native OpenCode via DSH autonomous control service",
+    "finalImplementationModel": "openai/gpt-6-luna",
+    "priorNativeCorrectionsUsed": "openai/gpt-5.5",
+    "rootAgentTrackedImplementationEdits": false
+  },
+  "browserAcceptance": {
+    "exactQualifiedSource": true,
+    "modesSwitchAndControlVisibility": true,
+    "externalProjectConfigSaved": true,
+    "freshHostRecoversSavedConfig": true,
+    "commercialAlignmentEnabledByDefault": true,
+    "unconfiguredNativeModelHonestAndBlocked": true,
+    "fixtureAccountsOnly": true,
+    "projectLoopStarted": false,
+    "realApiCalls": 0
+  },
+  "additionalHostProbe": {
+    "explicitSelectedPaidMetadataRetained": true,
+    "omittedConnectionExcluded": true,
+    "paidUnauthorizedFundedFallback": true,
+    "restartVerified": true,
+    "actualNativeWorkerStarts": 0,
+    "realApiCalls": 0
+  },
+  "limitations": {
+    "normalHarnessLiveModelE2E": false,
+    "normalHarnessSdkProtocolAndLifecycle": "local SDK fixture coverage; stock real SDK path preserved",
+    "newPaidApiCalls": 0,
+    "commercialProductDeliveryProof": false,
+    "autonomousProductE2E": false
+  },
+  "interventions": {
+    "kind": "bounded feature maintenance, not a no-intervention product experiment",
+    "priorFailuresPreserved": true,
+    "noPreviousFailedRunRelabeledPass": true,
+    "priorReviewFailures": [
+      "unsupported Reviewer model",
+      "review transport timeout",
+      "explicit connection selection rejected",
+      "CLI worktree cleanup EBUSY"
+    ],
+    "priorProviderFailures": [
+      "OpenCode Go upstream402",
+      "OpenCode OAuth GPT5.5 usage429",
+      "transient certificate verification errors"
+    ],
+    "governedReadOnlyAuditOfEarlierCandidate": "rejected; led to explicit-selection correction",
+    "noChangeActionOnEarlierCandidate": "did not qualify it",
+    "lastMaintenanceRuntimeStatus": "budget-exhausted",
+    "stopReason": "bounded two-action maintenance budget exhausted after MERGE_READY, not whole-product commercial completion"
+  },
+  "startup": {
+    "localHostProfile": "config.host.local.json (ignored, existing CLI settings only)",
+    "command": "npm start -- --host-agents config.host.local.json --state-dir .tmp/operator-web-host --port 4807",
+    "ordinaryNativeModel": "disabled until separately configured/authorized; no new API funding implied"
+  }
+}
