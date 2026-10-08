@@ -12,6 +12,14 @@ import { redact } from './process.mjs';
 
 const HOST_STATE_FILE = 'dsh-web-host.json';
 
+function isLaunchablePaidConnection(alias, options) {
+  if (!options?.paidApi) return true;
+  if ((options.transport ?? alias) !== 'opencode') return false;
+  const endpoint = options.paidApi.endpoint?.replace(/\/$/, '');
+  const baseURL = options.openCodeProvider?.baseURL?.replace(/\/$/, '');
+  return Boolean(endpoint && baseURL && endpoint === baseURL);
+}
+
 export class WebHost extends EventEmitter {
   constructor({ hostAgents = DEFAULT_HOST_AGENTS, hostModels, stateDir, nativeOptions = {} } = {}) {
     super();
@@ -240,12 +248,22 @@ export class WebHost extends EventEmitter {
     this.ctx = new Context();
     this.fiber = this.ctx.plugin(control);
     await new Promise(resolve => setImmediate(resolve));
-    const agentEntries = mergeAgentConfigs(this.projectConfig.agents, this.hostAgents);
+    let agentEntries = mergeAgentConfigs(this.projectConfig.agents, this.hostAgents);
+    const runtimeConfig = { ...this.projectConfig };
+    if (runtimeConfig.commercialLoop?.enabled) {
+      const resolvedWorker = this._resolveWorkerAlias(runtimeConfig.commercialLoop.worker, agentEntries);
+      runtimeConfig.commercialLoop = { ...runtimeConfig.commercialLoop, worker: resolvedWorker };
+    }
+    agentEntries = Object.fromEntries(Object.entries(agentEntries).filter(([alias, options]) => {
+      if (isLaunchablePaidConnection(alias, options)) return true;
+      const id = options.id ?? alias;
+      if (runtimeConfig.commercialLoop?.worker === id || runtimeConfig.commercialLoop?.worker === alias || runtimeConfig.decisionAgent === id || runtimeConfig.decisionAgent === alias) return true;
+      return false;
+    }));
     const agents = Object.entries(agentEntries).map(([alias, options]) => {
       const settings = { ...options, id: options.id ?? alias, connectionId: options.connectionId ?? alias };
       return createAgentAdapter(settings.transport ?? alias, settings);
     });
-    const runtimeConfig = { ...this.projectConfig };
     // Inject trusted routing only after Web validation. Models for deselected or
     // disabled connections must not become unknown/usable runtime connections.
     if (this.hostModels !== undefined) {
@@ -258,10 +276,6 @@ export class WebHost extends EventEmitter {
       if (models.length && !runtimeConfig.models.length && agents.length) {
         throw new Error('No Host models remain for selected connections; configure their model routing before starting the project');
       }
-    }
-    if (runtimeConfig.commercialLoop?.enabled) {
-      const resolvedWorker = this._resolveWorkerAlias(runtimeConfig.commercialLoop.worker, agentEntries);
-      runtimeConfig.commercialLoop = { ...runtimeConfig.commercialLoop, worker: resolvedWorker };
     }
     this.projectRuntime = this.ctx.autonomousControl.createProject(runtimeConfig, { agents });
     this.projectRuntime.on('state', view => this.emit('project-state', view));
