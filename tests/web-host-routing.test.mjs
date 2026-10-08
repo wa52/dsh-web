@@ -19,7 +19,7 @@ const models = [
   { id: 'host-routine', provider: 'opencode', connectionId: 'opencode-account', tier: 'routine', cost: 1 },
   { id: 'host-deep', provider: 'opencode', connectionId: 'opencode-account', tier: 'deep', cost: 3 },
   { id: 'host-security', provider: 'opencode', connectionId: 'opencode-account', tier: 'security', cost: 4 },
-  { id: 'host-paid-deep', provider: 'opencode', connectionId: 'opencode-account', tier: 'deep', cost: 0.01, paid: true, endpoint: 'https://api.example.invalid' },
+  { id: 'host-paid-deep', provider: 'opencode', connectionId: 'paid-account', tier: 'deep', cost: 0.01, paid: true, endpoint: 'https://api.example.invalid' },
   { id: 'disabled-routine', provider: 'opencode', connectionId: 'disabled-account', tier: 'routine', cost: 0.001 },
 ];
 
@@ -29,6 +29,13 @@ function hostAgents() {
       transport: 'opencode', connectionId: 'opencode-account', executable: process.execPath,
       argsPrefix: [agentFixture], enabled: true, roles: ['decide', 'build', 'review'],
       capabilities: ['reason', 'code', 'review', 'security'],
+    },
+    paidOpenCode: {
+      transport: 'opencode', connectionId: 'paid-account', executable: process.execPath,
+      argsPrefix: [agentFixture], enabled: true, roles: ['decide', 'build', 'review'],
+      capabilities: ['reason', 'code', 'review', 'security'],
+      paidApi: { endpoint: 'https://api.example.invalid' },
+      openCodeProvider: { id: 'host-paid-provider', name: 'Host paid fixture', baseURL: 'https://api.example.invalid' },
     },
     disabled: { transport: 'opencode', connectionId: 'disabled-account', enabled: false },
   };
@@ -56,13 +63,20 @@ function projectSetup(repository, stateDir) {
 }
 
 function assertRouted(projectRuntime) {
-  const agent = projectRuntime.registry.get('opencodeGo');
+  const agent = projectRuntime.registry.agents.get('opencodeGo');
+  const paidAgent = projectRuntime.registry.agents.get('paidOpenCode');
+  assert.ok(agent, 'funded Host connection is registered');
+  assert.ok(paidAgent, 'paid Host metadata is registered on a distinct connection');
+  assert.equal(paidAgent.paidApi.endpoint, 'https://api.example.invalid');
+  assert.equal(paidAgent.openCodeProvider.baseURL, 'https://api.example.invalid');
+  assert.equal(projectRuntime.registry.agents.has('disabled'), false, 'disabled Host connection is not registered');
   assert.equal(projectRuntime.routeFor(agent, { role: 'build', risk: 'normal' }).selectedModel, 'host-routine');
   assert.equal(projectRuntime.routeFor(agent, { role: 'build', risk: 'high' }).selectedModel, 'host-deep');
   assert.equal(projectRuntime.routeFor(agent, { role: 'review', capabilities: ['security'] }).selectedModel, 'host-security');
   assert.ok(!projectRuntime.config.models.some(model => model.id === 'disabled-routine'), 'disabled Host connection models are removed from effective project config');
   assert.ok(projectRuntime.config.models.some(model => model.id === 'host-paid-deep'), 'trusted paid metadata is retained server-side');
   assert.equal(projectRuntime.routeFor(agent, { role: 'build', risk: 'high' }).selectedModel, 'host-deep', 'paid model cannot displace an eligible free model without a project grant');
+  assert.equal(paidAgent.runs.size, 0, 'paid worker is not prepared without an explicit grant');
 }
 
 test('Web setup and restart retain Host model routing without persisting or exposing the registry', async t => {
@@ -184,10 +198,12 @@ test('CLI startup applies trusted nativeOptions and Host models through local SD
   const deadline = Date.now() + 10_000;
   let selected;
   let args;
+  let paidRuns;
   while (Date.now() < deadline) {
     const response = await fetch(`${base}/api/state`);
     const data = await response.json();
     selected = data.host?.projectWorld?.world?.runs?.find(run => run.routing)?.routing?.selectedModel;
+    paidRuns = data.host?.projectWorld?.agents?.find(agent => agent.id === 'paidOpenCode')?.runs?.length;
     try { args = JSON.parse(await readFile(agentArgsFile, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (selected && args) break;
     await new Promise(resolve => setTimeout(resolve, 50));
@@ -195,6 +211,7 @@ test('CLI startup applies trusted nativeOptions and Host models through local SD
   assert.equal(selected, 'host-routine', 'CLI-loaded Host model registry routes the first project decision');
   assert.ok(args, 'local Agent fixture was launched');
   assert.equal(args[args.indexOf('--model') + 1], 'host-routine');
+  assert.equal(paidRuns, 0, 'CLI project start does not prepare the paid worker without a grant');
   await post('/api/cancel', {});
   assert.equal(stderr.includes('API key'), false);
 });
