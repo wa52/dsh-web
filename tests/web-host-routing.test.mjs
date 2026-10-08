@@ -64,22 +64,18 @@ function projectSetup(repository, stateDir) {
 
 function assertRouted(projectRuntime) {
   const agent = projectRuntime.registry.agents.get('opencodeGo');
-  const paidAgent = projectRuntime.registry.agents.get('paidOpenCode');
   assert.ok(agent, 'funded Host connection is registered');
-  assert.ok(paidAgent, 'paid Host metadata is registered on a distinct connection');
-  assert.equal(paidAgent.paidApi.endpoint, 'https://api.example.invalid');
-  assert.equal(paidAgent.openCodeProvider.baseURL, 'https://api.example.invalid');
+  assert.equal(projectRuntime.registry.agents.has('paidOpenCode'), false, 'omitted Host connection is excluded by explicit project selection');
   assert.equal(projectRuntime.registry.agents.has('disabled'), false, 'disabled Host connection is not registered');
   assert.equal(projectRuntime.routeFor(agent, { role: 'build', risk: 'normal' }).selectedModel, 'host-routine');
   assert.equal(projectRuntime.routeFor(agent, { role: 'build', risk: 'high' }).selectedModel, 'host-deep');
   assert.equal(projectRuntime.routeFor(agent, { role: 'review', capabilities: ['security'] }).selectedModel, 'host-security');
   assert.ok(!projectRuntime.config.models.some(model => model.id === 'disabled-routine'), 'disabled Host connection models are removed from effective project config');
-  assert.ok(projectRuntime.config.models.some(model => model.id === 'host-paid-deep'), 'trusted paid metadata is retained server-side');
+  assert.ok(!projectRuntime.config.models.some(model => model.id === 'host-paid-deep'), 'omitted connection models are excluded from the effective catalog');
   assert.equal(projectRuntime.routeFor(agent, { role: 'build', risk: 'high' }).selectedModel, 'host-deep', 'paid model cannot displace an eligible free model without a project grant');
-  assert.equal(paidAgent.runs.size, 0, 'paid worker is not prepared without an explicit grant');
 }
 
-test('Web setup and restart retain Host model routing without persisting or exposing the registry', async t => {
+test('Web setup and restart apply explicit Host connection selection to runtime and model routing', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'dsh-web-host-models-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repository = await repositoryAt(root);
@@ -218,7 +214,7 @@ test('CLI startup applies trusted nativeOptions and Host models through local SD
   assert.equal(selected, 'host-routine', 'CLI-loaded Host model registry routes the first project decision');
   assert.ok(args, `local Agent fixture was launched; terminal=${terminal}; status=${lastState?.status}; failures=${JSON.stringify(lastState?.failures?.slice(-2) ?? [])}`);
   assert.equal(args[args.indexOf('--model') + 1], 'host-routine');
-  assert.equal(paidRuns, 0, 'CLI project start does not prepare the paid worker without a grant');
+  assert.equal(paidRuns, undefined, 'explicit project selection excludes the omitted paid worker');
   await post('/api/cancel', {});
   assert.equal(stderr.includes('API key'), false);
 });

@@ -6,7 +6,7 @@ import * as control from '../plugins/autonomous-control-loop/index.js';
 import { NativeSession, createNativeSession } from './native-session.mjs';
 import { createAgentAdapter } from './adapters.mjs';
 import { ProjectRuntime } from './project.mjs';
-import { loadProjectConfig, saveProjectConfig, mergeAgentConfigs, DEFAULT_HOST_AGENTS, sanitizeProjectConfig, validateBrowserProjectSetup, assertProjectStateOutsideRepository } from './project-config.mjs';
+import { loadProjectConfig, saveProjectConfig, mergeAgentConfigs, DEFAULT_HOST_AGENTS, sanitizeProjectConfig, validateBrowserProjectSetup, validateProjectConfig, assertProjectStateOutsideRepository } from './project-config.mjs';
 import { atomicJson } from './store.mjs';
 import { redact } from './process.mjs';
 
@@ -208,6 +208,9 @@ export class WebHost extends EventEmitter {
     this._assertNotSwitching();
     if (this._isBusy()) throw Object.assign(new Error('Cannot change project setup while work is running'), { code: 'RUNNING' });
     validateBrowserProjectSetup(config);
+    // Reject browser-owned provider/paid fields before checking Host aliases, so
+    // malformed selections receive the actionable policy error and cannot save.
+    validateProjectConfig(config);
     // Validate aliases before persistence or replacing the active runtime.
     mergeAgentConfigs(config.agents ?? {}, this.hostAgents);
     const permissions = { read: true, write: true, shell: false, network: false, gitCommit: false };

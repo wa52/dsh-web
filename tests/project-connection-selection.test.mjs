@@ -18,6 +18,7 @@ test('empty/default selection inherits Host enabled connections; explicit select
   assert.deepEqual(Object.keys(mergeAgentConfigs({}, hostAgents)), ['first', 'second', 'paid']);
   assert.deepEqual(Object.keys(mergeAgentConfigs({ first: { enabled: true }, second: { enabled: false }, disabled: { enabled: true } }, hostAgents)), ['first']);
   assert.throws(() => mergeAgentConfigs({ unknown: { enabled: true } }, hostAgents), /Unknown Host connection alias/);
+  assert.throws(() => mergeAgentConfigs({ paid: { enabled: 'yes' } }, hostAgents), /Invalid project selection/);
 });
 
 test('explicit subset filters runtime and trusted model catalog on setup and reload', async t => {
@@ -43,6 +44,8 @@ test('explicit subset filters runtime and trusted model catalog on setup and rel
     assert.deepEqual(runtime.config.models.map(model => model.connectionId), ['funded-first']);
     assert.equal(runtime.config.commercialLoop.worker, 'first');
     assert.equal(runtime.modelDecision.preferred(), 'first');
+    assert.equal(runtime.registry.agents.has('second'), false, 'omitted enabled funded adapter cannot enter auto worker or decision candidates');
+    assert.equal(runtime.config.models.some(model => model.connectionId === 'funded-second'), false);
     assert.equal(runtime.paidModelEligibility.size, 0, 'paid connection has no implicit authorization grant');
   };
   verify(host.projectRuntime);
