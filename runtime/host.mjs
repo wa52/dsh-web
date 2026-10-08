@@ -13,9 +13,10 @@ import { redact } from './process.mjs';
 const HOST_STATE_FILE = 'dsh-web-host.json';
 
 export class WebHost extends EventEmitter {
-  constructor({ hostAgents = DEFAULT_HOST_AGENTS, stateDir, nativeOptions = {} } = {}) {
+  constructor({ hostAgents = DEFAULT_HOST_AGENTS, hostModels, stateDir, nativeOptions = {} } = {}) {
     super();
     this.hostAgents = hostAgents;
+    this.hostModels = hostModels === undefined ? undefined : structuredClone(hostModels);
     this.stateDir = stateDir ? path.resolve(stateDir) : null;
     this.nativeOptions = nativeOptions;
     this.mode = nativeOptions.defaultMode ?? 'native';
@@ -229,6 +230,19 @@ export class WebHost extends EventEmitter {
       return createAgentAdapter(settings.transport ?? alias, settings);
     });
     const runtimeConfig = { ...this.projectConfig };
+    // Inject trusted routing only after Web validation. Models for deselected or
+    // disabled connections must not become unknown/usable runtime connections.
+    if (this.hostModels !== undefined) {
+      const models = Array.isArray(this.hostModels) ? this.hostModels : this.hostModels?.models;
+      if (!Array.isArray(models)) throw new Error('Host models must be an array or an object with a models array');
+      const connections = new Set(Object.entries(agentEntries).map(([alias, options]) => options.connectionId ?? alias));
+      const hostConnections = new Set(Object.entries(this.hostAgents).map(([alias, options]) => options.connectionId ?? alias));
+      runtimeConfig.models = structuredClone(models.filter(model => !model?.connectionId
+        || !hostConnections.has(model.connectionId) || connections.has(model.connectionId)));
+      if (models.length && !runtimeConfig.models.length && agents.length) {
+        throw new Error('No Host models remain for selected connections; configure their model routing before starting the project');
+      }
+    }
     if (runtimeConfig.commercialLoop?.enabled) {
       const resolvedWorker = this._resolveWorkerAlias(runtimeConfig.commercialLoop.worker, agentEntries);
       runtimeConfig.commercialLoop = { ...runtimeConfig.commercialLoop, worker: resolvedWorker };

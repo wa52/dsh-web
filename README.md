@@ -73,7 +73,35 @@ Web 新建项目默认启用共同商业 Loop，自动选择已启用的 Host Bu
 可以在表单取消勾选以使用原项目 Loop。独立 Reviewer 仍需另一个可用的 Host 身份。
 浏览器项目 Agent 配置仅保存 `enabled` 选择，不能启用 Host 禁用的账户，
 也不能覆盖 Host 的模型、凭证、启动参数或付费策略；可信 provider 设置仅在服务端保留。
-`models` 路由登记表仍通过可信的 CLI 项目配置提供，Web setup 不接受覆盖。
+一次性 Host 账户配置文件 `config.host.json`（或 `--host-agents <file>`）可同时包含
+`agents`、`models` 和 `nativeOptions`。原有仅含 `agents` 的文件与无配置默认值继续兼容；
+`--config` 直接项目模式仍使用原项目配置，不混入 Web Host 设置。
+Host 的 `models` 在 Web 保存、重启或切换回项目模式后注入服务端 Runtime，保持 routine / deep /
+security 自动路由；禁用或项目取消选择的连接不参与路由，付费连接仍须精确项目授权。
+登记表和原生启动环境不写入 `dsh-web-project.json`，也不作为浏览器 setup 配置返回。
+Web 项目设置只需填写该项目的目标、路径、成功标准和测试 argv，不接受模型或原生启动覆盖。
+
+例如在外部私有 Host 文件中配置以下**禁用占位**，替换并确认账户授权后再由运维者启用：
+
+```json
+{
+  "agents": {
+    "authorizedAccount": { "transport": "opencode", "connectionId": "authorized-account", "enabled": false, "executable": "opencode" }
+  },
+  "models": [
+    { "id": "REPLACE_WITH_AUTHORIZED_ROUTINE_MODEL_ID", "provider": "opencode", "connectionId": "authorized-account", "tier": "routine", "eligible": false },
+    { "id": "REPLACE_WITH_AUTHORIZED_DEEP_MODEL_ID", "provider": "opencode", "connectionId": "authorized-account", "tier": "deep", "eligible": false },
+    { "id": "REPLACE_WITH_AUTHORIZED_SECURITY_MODEL_ID", "provider": "opencode", "connectionId": "authorized-account", "tier": "security", "eligible": false }
+  ],
+  "nativeOptions": { "enabled": false, "profile": "sdk" }
+}
+```
+
+`nativeOptions` 可配置可信的 `workspace`、`executable`、`argsPrefix`、`profile` 和
+`artifactDir`；账户凭证由 Host 环境或 CLI 密钥存储提供，不把凭证值放入文件。
+默认 SDK 不需要自定义 launcher；自定义 launcher 路径必须指向已安装的本地运行时。
+新增离线回归：`node --test tests/web-host-routing.test.mjs`，使用本地 SDK/Agent 协议 fixture，
+无真实模型 API 调用，不声称真实付费或线上 native SDK E2E。
 本地验证：先运行 `node --test tests/web-mode-switch.test.mjs`（仅协议 fixture），
 再运行 `npm test`；浏览器检查未配置提示、项目保存后的状态与停止后的模式切换。
 这些验证不代表商业交付或付费线上 SDK 验收。

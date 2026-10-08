@@ -11,11 +11,11 @@ import { DEFAULT_HOST_AGENTS } from './project-config.mjs';
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1]; };
 
-async function loadHostAgents() {
+async function loadHostSettings() {
   const file = option('--host-agents') ?? (existsSync('config.host.json') ? 'config.host.json' : null);
-  if (!file) return DEFAULT_HOST_AGENTS;
+  if (!file) return { hostAgents: DEFAULT_HOST_AGENTS };
   const raw = JSON.parse(await readFile(path.resolve(file), 'utf8'));
-  return raw.agents ?? DEFAULT_HOST_AGENTS;
+  return { hostAgents: raw.agents ?? DEFAULT_HOST_AGENTS, hostModels: raw.models, nativeOptions: raw.nativeOptions ?? {} };
 }
 
 async function createProjectRuntimeFromConfig(ctx, config) {
@@ -47,9 +47,9 @@ if (args.includes('--help')) {
     runtime = await createProjectRuntimeFromConfig(ctx, config);
   } else {
     // Web host mode: load agents from host config, allow UI-driven project setup.
-    const hostAgents = await loadHostAgents();
+    const hostSettings = await loadHostSettings();
     const stateDir = option('--state-dir') ?? path.resolve('.tmp', 'dsh-web-host');
-    host = new WebHost({ hostAgents, stateDir, nativeOptions: {} });
+    host = new WebHost({ ...hostSettings, stateDir });
     await host.init();
     runtime = host.projectRuntime;
   }
